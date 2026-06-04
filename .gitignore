@@ -1,0 +1,54 @@
+# IDE/Editor files
+.idea/
+.ensime/
+.ensime_cache/
+.metals/
+.bsp/
+matcher.iml
+.bloop/
+project/metals.sbt
+project/project/
+
+# scala build folders and files
+target
+*.tgz
+*.gz
+*.jar
+!third-party/yourkit/yjp-controller-api-redist.jar
+
+# other dependencies
+.node_modules
+
+# vim
+*.*~
+
+# dotfiles
+.dockerignore
+.editorconfig
+.DS_Store
+
+# logs
+*.log
+
+# local settings
+localsettings.json
+local.conf
+waves_logback.xml
+
+# Text files
+*.txt
+*.ods
+*.csv
+*.dat
+
+# standalone docker
+Dockerfile
+
+# logs
+*.log
+
+native
+
+allure-results
+
+data

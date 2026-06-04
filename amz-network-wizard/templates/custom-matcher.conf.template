@@ -1,0 +1,48 @@
+# Template Matcher DEX Configuration
+waves.dex {
+  # Isolated directories for Matcher databases and event logs
+  root-directory = "__MATCHER_DATA_DIR__"
+  data-directory = "__MATCHER_DATA_DIR__/data"
+
+  # Network Scheme Character (matches custom blockchain)
+  address-scheme-character = "__CHAIN_ID__"
+
+  # gRPC connection to the Waves/Amzx Node gRPC extension
+  waves-blockchain-client {
+    grpc {
+      target = "127.0.0.1:__GRPC_PORT__"
+    }
+    blockchain-updates-grpc {
+      target = "127.0.0.1:__BLOCKCHAIN_UPDATES_PORT__"
+    }
+  }
+
+  # Accounts storage settings
+  account-storage {
+    type = "in-mem"
+  }
+
+  # LP Accounts file path
+  lp-accounts {
+    file-path = "__MATCHER_DATA_DIR__/lp-accounts.txt"
+  }
+
+  # REST API configuration
+  rest-api {
+    address = "127.0.0.1"
+    port = __MATCHER_PORT__
+    # Base58 Blake2b hash of REST API Key
+    api-key-hashes = [
+      "__API_KEY_HASH__"
+    ]
+  }
+
+  # Event queue settings (uses LevelDB locally instead of Kafka)
+  events-queue {
+    type = "local"
+    local {
+      enable-storing = yes
+      clean-before-consume = yes
+    }
+  }
+}

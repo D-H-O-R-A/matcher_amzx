@@ -1,0 +1,101 @@
+package com.wavesplatform.dex.db
+
+import cats.instances.option.catsStdInstancesForOption
+import cats.syntax.apply.catsSyntaxTuple2Semigroupal
+import com.google.common.primitives.Longs
+import com.wavesplatform.dex.db.leveldb.{Key, LevelDb}
+import com.wavesplatform.dex.domain.asset.AssetPair
+import com.wavesplatform.dex.meta.getSimpleName
+import com.wavesplatform.dex.model.OrderBookSnapshot
+import com.wavesplatform.dex.queue.ValidatedCommandWithMeta.Offset
+import com.wavesplatform.dex.tool.OnComplete
+
+import java.nio.ByteBuffer
+
+trait OrderBookSnapshotDb[F[_]] {
+  def get(assetPair: AssetPair): F[Option[(Offset, OrderBookSnapshot)]]
+  def update(assetPair: AssetPair, offset: Offset, newSnapshot: Option[OrderBookSnapshot]): F[Unit]
+  def delete(assetPair: AssetPair): F[Unit]
+  def iterateOffsets(pred: AssetPair => Boolean): F[Map[AssetPair, Offset]]
+  def iterateSnapshotsByPair(pred: AssetPair => Boolean): F[Map[AssetPair, OrderBookSnapshot]]
+  def iterateSnapshots(pred: (AssetPair, OrderBookSnapshot) => Boolean): F[Map[AssetPair, OrderBookSnapshot]]
+}
+
+object OrderBookSnapshotDb {
+
+  private val cls = getSimpleName(this)
+
+  def levelDb[F[_]: OnComplete](levelDb: LevelDb[F]): OrderBookSnapshotDb[F] = new OrderBookSnapshotDb[F] {
+
+    override def get(assetPair: AssetPair): F[Option[(Offset, OrderBookSnapshot)]] =
+      measureDb(cls, "get") {
+        levelDb.readOnly { ro =>
+          val (obOffsetKey, obKey) = keys(assetPair)
+          (ro.get(obOffsetKey), ro.get(obKey)).tupled
+        }
+      }
+
+    override def update(assetPair: AssetPair, offset: Offset, newSnapshot: Option[OrderBookSnapshot]): F[Unit] =
+      measureDb(cls, "update") {
+        levelDb.readWrite { rw =>
+          val (obOffsetKey, obKey) = keys(assetPair)
+          rw.put(obOffsetKey, Some(offset))
+          newSnapshot.foreach(x => rw.put(obKey, Some(x)))
+        }
+      }
+
+    override def delete(assetPair: AssetPair): F[Unit] =
+      measureDb(cls, "delete") {
+        levelDb.readWrite { rw =>
+          val (obOffsetKey, obKey) = keys(assetPair)
+          rw.delete(obOffsetKey)
+          rw.delete(obKey)
+        }
+      }
+
+    def iterateOffsets(pred: AssetPair => Boolean): F[Map[AssetPair, Offset]] =
+      measureDb(cls, "iterateOffsets") {
+        levelDb.readOnly { ro =>
+          val m = Map.newBuilder[AssetPair, Offset]
+          ro.iterateOver(DbKeys.OrderBookSnapshotOffsetPrefix) { entry =>
+            val pair = AssetPair.fromBytes(entry.getKey.drop(2))._1
+            if (pred(pair))
+              m.addOne(pair -> Longs.fromByteArray(entry.getValue))
+          }
+          m.result()
+        }
+      }
+
+    def iterateSnapshotsByPair(pred: AssetPair => Boolean): F[Map[AssetPair, OrderBookSnapshot]] =
+      measureDb(cls, "iterateSnapshotsByPair") {
+        levelDb.readOnly { ro =>
+          val m = Map.newBuilder[AssetPair, OrderBookSnapshot]
+          ro.iterateOver(DbKeys.OrderBookSnapshotPrefix) { entry =>
+            val pair = AssetPair.fromBytes(entry.getKey.drop(2))._1
+            if (pred(pair))
+              m.addOne(pair -> OrderBookSnapshot.fromBytes(ByteBuffer.wrap(entry.getValue)))
+          }
+          m.result()
+        }
+      }
+
+    private def keys(assetPair: AssetPair): (Key[Option[Offset]], Key[Option[OrderBookSnapshot]]) =
+      (DbKeys.orderBookSnapshotOffset(assetPair), DbKeys.orderBookSnapshot(assetPair))
+
+    override def iterateSnapshots(pred: (AssetPair, OrderBookSnapshot) => Boolean): F[Map[AssetPair, OrderBookSnapshot]] =
+      measureDb(cls, "iterateSnapshots") {
+        levelDb.readOnly { ro =>
+          val m = Map.newBuilder[AssetPair, OrderBookSnapshot]
+          ro.iterateOver(DbKeys.OrderBookSnapshotPrefix) { entry =>
+            val pair = AssetPair.fromBytes(entry.getKey.drop(2))._1
+            val snapshot = OrderBookSnapshot.fromBytes(ByteBuffer.wrap(entry.getValue))
+            if (pred(pair, snapshot))
+              m.addOne(pair -> snapshot)
+          }
+          m.result()
+        }
+      }
+
+  }
+
+}

@@ -1,0 +1,97 @@
+# Template Waves/Amzx Blockchain Node Configuration
+waves {
+  # Directory where state, rocksdb and wallet databases are stored
+  directory = "__NODE_DATA_DIR__"
+
+  blockchain {
+    type = CUSTOM
+    custom {
+      # Custom Network ID character (e.g. 'D')
+      address-scheme-character = "__CHAIN_ID__"
+      
+      # Activation periods for features and consensus parameters
+      functionality {
+        feature-check-blocks-period = 100
+        blocks-for-feature-activation = 80
+        generation-balance-depth-from-50-to-1000-after-height = 0
+        reset-effective-balances-at-height = 0
+        block-version-3-after-height = 0
+        pre-activated-features {
+          1 = 0, 2 = 0, 3 = 0, 4 = 0, 5 = 0, 6 = 0, 7 = 0, 8 = 0, 9 = 0, 10 = 0,
+          11 = 0, 12 = 0, 13 = 0, 14 = 0, 15 = 0, 16 = 0, 17 = 0, 18 = 0, 19 = 0,
+          20 = 0, 21 = 0, 22 = 0, 23 = 0, 24 = 0, 25 = 0
+        }
+        double-features-periods-after-height = 1000000000
+        max-transaction-time-back-offset = 120m
+        max-transaction-time-forward-offset = 90m
+        lease-expiration = 1000000
+        min-asset-info-update-interval = 7
+        min-block-time = 5s
+        delay-delta = 8
+      }
+      
+      # Block rewards settings
+      rewards {
+        term = 100000
+        term-after-capped-reward-feature = 100000
+        initial = 600000000
+        min-increment = 50000000
+        voting-interval = 10000
+      }
+      
+      # Genesis Block settings (replaced dynamically by wizard)
+      __GENESIS_BLOCK_CONFIG__
+    }
+  }
+
+  # P2P Network binding settings (Disabled external connections for safety)
+  network {
+    bind-address = "127.0.0.1"
+    port = __P2P_PORT__
+    known-peers = []
+    node-name = "__NODE_NAME__"
+    
+    traffic-watcher {
+      stop-sending-threshold = 100 MB
+    }
+  }
+
+  # Wallet configuration
+  wallet {
+    file = "__NODE_DATA_DIR__/wallet/wallet.dat"
+    password = "__WALLET_PASSWORD__"
+    # Base58 seed representing the genesis account
+    seed = "__SEED_BASE58__"
+  }
+
+  # REST API configuration
+  rest-api {
+    enable = yes
+    bind-address = "127.0.0.1"
+    port = __REST_API_PORT__
+    # Base58 Blake2b hash of REST API Key
+    api-key-hash = "__API_KEY_HASH__"
+  }
+
+  # Load the Matcher DEX gRPC Integration and BlockchainUpdates Extensions
+  extensions = [
+    "com.wavesplatform.dex.grpc.integration.DEXExtension",
+    "com.wavesplatform.events.BlockchainUpdates"
+  ]
+
+  # DEX extension gRPC server binding
+  dex {
+    grpc {
+      integration {
+        host = "127.0.0.1"
+        port = __GRPC_PORT__
+      }
+    }
+    lp-accounts {
+      file-path = "__NODE_DATA_DIR__/lp-accounts.txt"
+    }
+    order-script-validation {
+      allowed-blockchain-state-accounts = []
+    }
+  }
+}

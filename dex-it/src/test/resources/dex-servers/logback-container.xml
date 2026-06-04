@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- And additional file. The base configuration is dex/src/package/doc/logback.xml -->
+<included>
+    <conversionRule conversionWord="traceID" converterClass="kamon.instrumentation.logback.tools.CompactTraceIDConverter" />
+    <conversionRule conversionWord="spanID" converterClass="kamon.instrumentation.logback.tools.CompactSpanIDConverter" />
+
+    <appender name="BRIEF" class="ch.qos.logback.core.FileAppender">
+        <file>${logback.brief.fullPath}</file>
+        <append>true</append>
+        <immediateFlush>false</immediateFlush>
+        <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+            <level>TRACE</level>
+        </filter>
+        <encoder>
+            <pattern><![CDATA[%date{HH:mm:ss.SSS,UTC} %-5level [%.25thread] %logger{26} %traceID%spanID{}- %msg%n%rEx]]></pattern>
+        </encoder>
+    </appender>
+
+    <appender name="DETAILED" class="ch.qos.logback.core.FileAppender">
+        <file>${logback.detailed.fullPath}</file>
+        <append>true</append>
+        <immediateFlush>false</immediateFlush>
+        <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+            <level>TRACE</level>
+        </filter>
+        <encoder>
+            <pattern><![CDATA[%date{HH:mm:ss.SSS,UTC} %-5level [%.25thread] %logger{26} %traceID%spanID{}- %msg%n%rEx]]></pattern>
+        </encoder>
+    </appender>
+
+    <root>
+        <appender-ref ref="BRIEF"/>
+        <appender-ref ref="DETAILED"/>
+    </root>
+
+    <logger name="org.redisson" level="INFO"/>
+    <logger name="com.wavesplatform.dex.api.http.routes.v0" level="DEBUG"/>
+
+    <!-- Networking -->
+    <logger name="io.netty" level="INFO" additivity="false">
+        <appender-ref ref="DETAILED"/>
+    </logger>
+    <logger name="io.grpc.netty" level="INFO" additivity="false">
+        <appender-ref ref="DETAILED"/>
+    </logger>
+    <logger name="akka.http" level="TRACE" additivity="false">
+        <appender-ref ref="DETAILED"/>
+    </logger>
+
+    <!-- gRPC -->
+    <logger name="com.wavesplatform.dex.grpc.integration.clients.matcherext.MatcherExtensionGrpcAsyncClient" level="TRACE" additivity="false">
+        <appender-ref ref="DETAILED"/>
+    </logger>
+
+    <!-- Queue -->
+    <logger name="org.apache.kafka" level="DEBUG" additivity="false">
+        <appender-ref ref="DETAILED"/>
+    </logger>
+    <logger name="org.apache.kafka.clients.producer.KafkaProducer" level="TRACE" additivity="false">
+        <appender-ref ref="DETAILED"/>
+    </logger>
+    <logger name="oshi.util.FileUtil" level="INFO"/>
+    <logger name="org.apache.kafka.common.metrics.Metrics" level="INFO"/>
+    <logger name="org.apache.kafka.common.network.Selector" level="DEBUG" additivity="false">
+        <appender-ref ref="BRIEF"/>
+        <appender-ref ref="DETAILED"/>
+    </logger>
+</included>
