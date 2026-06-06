@@ -247,80 +247,221 @@ fi
 export JAVA_HOME=/usr/lib/jvm/java-1.17.0-openjdk-amd64
 export PATH=$JAVA_HOME/bin:$PATH
 
+# Locate the compiled AMZX Node Fat JAR (always search for it)
+FAT_JAR="$WAVES_SRC_DIR/node/target/waves-all-1.6.3-DIRTY.jar"
+if [ ! -f "$FAT_JAR" ]; then
+  FAT_JAR=$(find "$WAVES_SRC_DIR" -name "waves-all*.jar" | head -n 1)
+fi
+
+if [ -z "$FAT_JAR" ] || [ ! -f "$FAT_JAR" ]; then
+  echo -e "${YELLOW}Aviso: O arquivo Fat JAR do AMZX Node não foi encontrado em: $WAVES_SRC_DIR/node/target/${NC}"
+  read -p "Deseja realizar a compilação (SBT assembly) automática agora? [S/n]: " RUN_BUILD_LATE
+  RUN_BUILD_LATE=${RUN_BUILD_LATE:-S}
+  if [[ "$RUN_BUILD_LATE" =~ ^[Ss]$ ]]; then
+    echo -e "${CYAN}Compilando AMZX Node (sbt node/assembly)...${NC}"
+    cd "$WAVES_SRC_DIR"
+    JAVA_HOME=/usr/lib/jvm/java-1.17.0-openjdk-amd64 sbt node/assembly
+    if [ $? -ne 0 ]; then
+      echo -e "${RED}${BOLD}[ERROR] Falha ao compilar o AMZX Node.${NC}"
+      exit 1
+    fi
+    FAT_JAR=$(find "$WAVES_SRC_DIR" -name "waves-all*.jar" | head -n 1)
+    
+    echo -e "${CYAN}Compilando AMZX Matcher DEX (sbt waves-ext/Universal/stage)...${NC}"
+    cd "$MATCHER_SRC_DIR"
+    JAVA_HOME=/usr/lib/jvm/java-1.17.0-openjdk-amd64 sbt "project dex" compile waves-ext/Universal/stage
+    if [ $? -ne 0 ]; then
+      echo -e "${RED}${BOLD}[ERROR] Falha ao compilar o Matcher DEX.${NC}"
+      exit 1
+    fi
+    cd "$WIZARD_DIR"
+    echo -e "${GREEN}${BOLD}Compilações completadas com sucesso! Continuando configuração...${NC}"
+  else
+    echo -e "⚠️  ${RED}Prosseguindo sem o Fat JAR. O script de inicialização do nó start-node.sh pode não funcionar até que você o compile manualmente.${NC}"
+    FAT_JAR="$WAVES_SRC_DIR/node/target/waves-all-1.6.3-DIRTY.jar" # default placeholder
+  fi
+fi
+
 # ------------------------------------------------------------------------------
-# STEP 4: Configure custom parameters
+# STEP 4: CONFIGURE NETWORK PARAMETERS & DETECT EXISTING SETUP
 # ------------------------------------------------------------------------------
 echo
 echo -e "${YELLOW}${BOLD}--- 🪙 STEP 4: CONFIGURE NETWORK PARAMETERS ---${NC}"
 
-read -p "Enter Network Character (Chain ID) [default: D]: " CHAIN_ID
-CHAIN_ID=${CHAIN_ID:-D}
-CHAIN_ID=$(echo "$CHAIN_ID" | tr '[:lower:]' '[:upper:]' | cut -c1)
+REUSE_EXISTING_CONFIG=false
+RUN_DIR_NAME=""
 
-# Calcular formatos adicionais de Chain ID para compatibilidade com Ethereum/MetaMask
-ETH_CHAIN_ID_DEC=$(printf '%d' "'$CHAIN_ID")
-ETH_CHAIN_ID_HEX=$(printf '0x%02x' "$ETH_CHAIN_ID_DEC")
+# Check if there is an existing run directory the user wants to reuse
+read -p "Deseja reutilizar ou iniciar uma rede privada AMZX já existente nesta máquina? [s/N]: " REUSE_PROMPT
+REUSE_PROMPT=${REUSE_PROMPT:-N}
 
-echo -e "Configurações geradas para o Chain ID informado:"
-echo -e "👉 ${GREEN}Formato Waves (Caractere):${NC}       ${BOLD}$CHAIN_ID${NC}"
-echo -e "👉 ${GREEN}Formato Ethereum (MetaMask):${NC}     ${BOLD}$ETH_CHAIN_ID_DEC${NC}"
-echo -e "👉 ${GREEN}Formato Byte Ethereum (Hex):${NC}     ${BOLD}$ETH_CHAIN_ID_HEX${NC}"
-echo
+if [[ "$REUSE_PROMPT" =~ ^[Ss]$ ]]; then
+  read -p "Digite o nome da pasta de execução existente [default: run-amzx-C]: " RUN_DIR_INPUT
+  RUN_DIR_INPUT=${RUN_DIR_INPUT:-run-amzx-C}
+  RUN_DIR="$WIZARD_DIR/$RUN_DIR_INPUT"
+  BLOCKCHAIN_CONF_PATH="$RUN_DIR/blockchain.conf"
+  MATCHER_CONF_PATH="$RUN_DIR/matcher.conf"
 
-read -p "Enter Native Coin Name [default: AMZX]: " COIN_NAME
-COIN_NAME=${COIN_NAME:-AMZX}
+  if [ -f "$BLOCKCHAIN_CONF_PATH" ] && [ -f "$MATCHER_CONF_PATH" ]; then
+    REUSE_EXISTING_CONFIG=true
+    RUN_DIR_NAME="$RUN_DIR_INPUT"
+    echo -e "🔍 ${GREEN}Configuração existente encontrada! Extraindo parâmetros com segurança...${NC}"
 
-read -p "Enter Total Genesis Supply (Moedas inteiras) [default: 100000000]: " SUPPLY
-SUPPLY=${SUPPLY:-100000000}
-SUPPLY_SATOSHIS=$(echo "$SUPPLY * 100000000" | bc 2>/dev/null || expr "$SUPPLY" \* 100000000)
+    # Extract parameters using robust regex
+    CHAIN_ID=$(grep -E "address-scheme-character\s*=" "$BLOCKCHAIN_CONF_PATH" | head -n 1 | sed -E 's/.*=[[:space:]]*"([^"]+)".*/\1/')
+    CHAIN_ID=${CHAIN_ID:-C}
 
-read -p "Enter Admin Genesis Seed Phrase [default: amzblockchain test private local network genesis seed wordlist]: " SEED
-SEED=${SEED:-amzblockchain test private local network genesis seed wordlist}
+    P2P_PORT=$(sed -n '/network[[:space:]]*{/,/}/p' "$BLOCKCHAIN_CONF_PATH" | grep "port" | sed -E 's/.*=[[:space:]]*([0-9]+).*/\1/')
+    P2P_PORT=${P2P_PORT:-6868}
 
-echo
-echo -e "${YELLOW}${BOLD}--- 🔌 STEP 5: CONFIGURE SERVICE PORTS ---${NC}"
-read -p "Node REST API Port [default: 6869]: " REST_API_PORT
-REST_API_PORT=${REST_API_PORT:-6869}
+    REST_API_PORT=$(sed -n '/rest-api[[:space:]]*{/,/}/p' "$BLOCKCHAIN_CONF_PATH" | grep "port" | sed -E 's/.*=[[:space:]]*([0-9]+).*/\1/')
+    REST_API_PORT=${REST_API_PORT:-6869}
 
-read -p "Node P2P Network Port [default: 6868]: " P2P_PORT
-P2P_PORT=${P2P_PORT:-6868}
+    GRPC_PORT=$(sed -n '/integration[[:space:]]*{/,/}/p' "$BLOCKCHAIN_CONF_PATH" | grep "port" | sed -E 's/.*=[[:space:]]*([0-9]+).*/\1/')
+    GRPC_PORT=${GRPC_PORT:-6887}
 
-read -p "Node gRPC DEX Port [default: 6887]: " GRPC_PORT
-GRPC_PORT=${GRPC_PORT:-6887}
+    MATCHER_PORT=$(sed -n '/rest-api[[:space:]]*{/,/}/p' "$MATCHER_CONF_PATH" | grep "port" | sed -E 's/.*=[[:space:]]*([0-9]+).*/\1/')
+    MATCHER_PORT=${MATCHER_PORT:-6886}
 
-read -p "Node gRPC Blockchain Updates Port [default: 6881]: " BLOCKCHAIN_UPDATES_PORT
-BLOCKCHAIN_UPDATES_PORT=${BLOCKCHAIN_UPDATES_PORT:-6881}
+    BLOCKCHAIN_UPDATES_PORT=$(grep -A 2 "blockchain-updates-grpc" "$MATCHER_CONF_PATH" | grep "target" | sed -E 's/.*:([0-9]+)".*/\1/')
+    BLOCKCHAIN_UPDATES_PORT=${BLOCKCHAIN_UPDATES_PORT:-6881}
 
-read -p "Matcher DEX REST API Port [default: 6886]: " MATCHER_PORT
-MATCHER_PORT=${MATCHER_PORT:-6886}
+    GENESIS_ADDRESS=$(grep -oE "3[A-Za-z0-9]{34}" "$BLOCKCHAIN_CONF_PATH" | head -n 1)
+    GENESIS_ADDRESS=${GENESIS_ADDRESS:-"Desconhecido"}
 
-echo
-echo -e "${YELLOW}${BOLD}--- 🛡️ STEP 5b: CONFIGURE REST API SECURITY ---${NC}"
-echo -e "Você é obrigado a definir uma senha de acesso personalizada e segura para a REST API do Swagger (X-Api-Key)."
-echo -e "Esta chave protege o acesso a endpoints altamente sensíveis do nó, como os que expõem a seed (semente) da carteira."
-echo -e "${RED}${BOLD}IMPORTANTE:${NC} O uso da senha padrão 'ridethewaves!' é proibido pelo próprio nó para evitar falhas graves de segurança."
-echo
+    COIN_NAME=$(grep -i "Native Coin:" "$BLOCKCHAIN_CONF_PATH" | sed -E 's/.*:[[:space:]]*(.*)/\1/')
+    COIN_NAME=${COIN_NAME:-"AMZX"}
 
-while true; do
-  read -p "Digite a sua nova Swagger REST API Key (mínimo 10 caracteres): " REST_API_KEY
-  if [ -z "$REST_API_KEY" ]; then
-    echo -e "${RED}⚠️  Erro: A senha não pode ser vazia.${NC}"
-  elif [ "$REST_API_KEY" = "ridethewaves!" ]; then
-    echo -e "${RED}⚠️  Erro: A senha padrão 'ridethewaves!' é proibida e bloqueada pelo node. Escolha uma senha personalizada e segura.${NC}"
-  elif [ ${#REST_API_KEY} -lt 10 ]; then
-    echo -e "${RED}⚠️  Erro: A senha precisa ter pelo menos 10 caracteres para garantir a segurança da rede.${NC}"
+    # Calculate Ethereum chain ID for compatibility
+    ETH_CHAIN_ID_DEC=$(printf '%d' "'$CHAIN_ID")
+    ETH_CHAIN_ID_HEX=$(printf '0x%02x' "$ETH_CHAIN_ID_DEC")
+
+    echo
+    echo -e "========================================================="
+    echo -e "   📦  ${CYAN}${BOLD}PARÂMETROS EXTRAÍDOS COM SUCESSO DA REDE ATUAL${NC}"
+    echo -e "========================================================="
+    echo -e "👉 ${GREEN}Chain ID (Caractere):${NC}       ${BOLD}$CHAIN_ID${NC}"
+    echo -e "👉 ${GREEN}Ethereum Chain ID (Dec):${NC}   ${BOLD}$ETH_CHAIN_ID_DEC${NC}"
+    echo -e "👉 ${GREEN}Ethereum Chain ID (Hex):${NC}   ${BOLD}$ETH_CHAIN_ID_HEX${NC}"
+    echo -e "👉 ${GREEN}Node REST API Port:${NC}        ${BOLD}$REST_API_PORT${NC}"
+    echo -e "👉 ${GREEN}Node P2P Port:${NC}            ${BOLD}$P2P_PORT${NC}"
+    echo -e "👉 ${GREEN}gRPC DEX Port:${NC}            ${BOLD}$GRPC_PORT${NC}"
+    echo -e "👉 ${GREEN}gRPC Updates Port:${NC}        ${BOLD}$BLOCKCHAIN_UPDATES_PORT${NC}"
+    echo -e "👉 ${GREEN}Matcher DEX REST Port:${NC}    ${BOLD}$MATCHER_PORT${NC}"
+    echo -e "👉 ${GREEN}Genesis Address:${NC}          ${BOLD}$GENESIS_ADDRESS${NC}"
+    echo -e "👉 ${GREEN}Native Coin Name:${NC}         ${BOLD}$COIN_NAME${NC}"
+    echo -e "========================================================="
+    echo
   else
-    echo -e "${GREEN}✅ Senha de acesso REST API definida com sucesso!${NC}"
-    break
+    echo -e "⚠️  ${RED}Nenhuma configuração existente encontrada em '$RUN_DIR_INPUT'. Prosseguindo com nova configuração do zero.${NC}"
   fi
-  echo
-done
+fi
 
-echo
-echo -e "${YELLOW}${BOLD}--- 📂 STEP 6: CONFIGURE RUN DATA DIRECTORIES ---${NC}"
-read -p "Enter Run Directory name [default: run-amzx-$CHAIN_ID]: " RUN_DIR_NAME
-RUN_DIR_NAME=${RUN_DIR_NAME:-run-amzx-$CHAIN_ID}
-RUN_DIR="$WIZARD_DIR/$RUN_DIR_NAME"
+if [ "$REUSE_EXISTING_CONFIG" = false ]; then
+  read -p "Enter Network Character (Chain ID) [default: D]: " CHAIN_ID
+  CHAIN_ID=${CHAIN_ID:-D}
+  CHAIN_ID=$(echo "$CHAIN_ID" | tr '[:lower:]' '[:upper:]' | cut -c1)
+
+  # Calcular formatos adicionais de Chain ID para compatibilidade com Ethereum/MetaMask
+  ETH_CHAIN_ID_DEC=$(printf '%d' "'$CHAIN_ID")
+  ETH_CHAIN_ID_HEX=$(printf '0x%02x' "$ETH_CHAIN_ID_DEC")
+
+  echo -e "Configurações geradas para o Chain ID informado:"
+  echo -e "👉 ${GREEN}Formato Waves (Caractere):${NC}       ${BOLD}$CHAIN_ID${NC}"
+  echo -e "👉 ${GREEN}Formato Ethereum (MetaMask):${NC}     ${BOLD}$ETH_CHAIN_ID_DEC${NC}"
+  echo -e "👉 ${GREEN}Formato Byte Ethereum (Hex):${NC}     ${BOLD}$ETH_CHAIN_ID_HEX${NC}"
+  echo
+
+  read -p "Enter Native Coin Name [default: AMZX]: " COIN_NAME
+  COIN_NAME=${COIN_NAME:-AMZX}
+
+  read -p "Enter Total Genesis Supply (Moedas inteiras) [default: 100000000]: " SUPPLY
+  SUPPLY=${SUPPLY:-100000000}
+  SUPPLY_SATOSHIS=$(echo "$SUPPLY * 100000000" | bc 2>/dev/null || expr "$SUPPLY" \* 100000000)
+
+  read -p "Enter Admin Genesis Seed Phrase [default: amzblockchain test private local network genesis seed wordlist]: " SEED
+  SEED=${SEED:-amzblockchain test private local network genesis seed wordlist}
+
+  echo
+  echo -e "${YELLOW}${BOLD}--- 🔌 STEP 5: CONFIGURE SERVICE PORTS ---${NC}"
+  read -p "Node REST API Port [default: 6869]: " REST_API_PORT
+  REST_API_PORT=${REST_API_PORT:-6869}
+
+  read -p "Node P2P Network Port [default: 6868]: " P2P_PORT
+  P2P_PORT=${P2P_PORT:-6868}
+
+  read -p "Node gRPC DEX Port [default: 6887]: " GRPC_PORT
+  GRPC_PORT=${GRPC_PORT:-6887}
+
+  read -p "Node gRPC Blockchain Updates Port [default: 6881]: " BLOCKCHAIN_UPDATES_PORT
+  BLOCKCHAIN_UPDATES_PORT=${BLOCKCHAIN_UPDATES_PORT:-6881}
+
+  read -p "Matcher DEX REST API Port [default: 6886]: " MATCHER_PORT
+  MATCHER_PORT=${MATCHER_PORT:-6886}
+
+  echo
+  echo -e "${YELLOW}${BOLD}--- 🛡️ STEP 5b: CONFIGURE REST API SECURITY ---${NC}"
+  echo -e "Você é obrigado a definir uma senha de acesso personalizada e segura para a REST API do Swagger (X-Api-Key)."
+  echo -e "Esta chave protege o acesso a endpoints altamente sensíveis do nó, como os que expõem a seed (semente) da carteira."
+  echo -e "${RED}${BOLD}IMPORTANTE:${NC} O uso da senha padrão 'ridethewaves!' é proibido pelo próprio nó para evitar falhas graves de segurança."
+  echo
+
+  while true; do
+    read -p "Digite a sua nova Swagger REST API Key (mínimo 10 caracteres): " REST_API_KEY
+    if [ -z "$REST_API_KEY" ]; then
+      echo -e "${RED}⚠️  Erro: A senha não pode ser vazia.${NC}"
+    elif [ "$REST_API_KEY" = "ridethewaves!" ]; then
+      echo -e "${RED}⚠️  Erro: A senha padrão 'ridethewaves!' é proibida e bloqueada pelo node. Escolha uma senha personalizada e segura.${NC}"
+    elif [ ${#REST_API_KEY} -lt 10 ]; then
+      echo -e "${RED}⚠️  Erro: A senha precisa ter pelo menos 10 caracteres para garantir a segurança da rede.${NC}"
+    else
+      echo -e "${GREEN}✅ Senha de acesso REST API definida com sucesso!${NC}"
+      break
+    fi
+    echo
+  done
+
+  echo
+  echo -e "${YELLOW}${BOLD}--- 📂 STEP 6: CONFIGURE RUN DATA DIRECTORIES ---${NC}"
+  read -p "Enter Run Directory name [default: run-amzx-$CHAIN_ID]: " RUN_DIR_NAME
+  RUN_DIR_NAME=${RUN_DIR_NAME:-run-amzx-$CHAIN_ID}
+  RUN_DIR="$WIZARD_DIR/$RUN_DIR_NAME"
+  BLOCKCHAIN_CONF_PATH="$RUN_DIR/blockchain.conf"
+  MATCHER_CONF_PATH="$RUN_DIR/matcher.conf"
+fi
+
+# Late detection check in case they did not use early reuse but pointed to an existing directory
+if [ "$REUSE_EXISTING_CONFIG" = false ] && [ -f "$BLOCKCHAIN_CONF_PATH" ] && [ -f "$MATCHER_CONF_PATH" ]; then
+  echo
+  echo -e "${YELLOW}${BOLD}⚠️  DETECTAMOS UMA CONFIGURAÇÃO EXISTENTE EM: $RUN_DIR_NAME${NC}"
+  echo -e "Já existem arquivos de configuração e chaves de criptografia do bloco Genesis gerados para esta pasta."
+  echo
+  read -p "Deseja reutilizar a configuração e criptografia do Genesis atuais? [S/n]: " REUSE_CHOICE
+  REUSE_CHOICE=${REUSE_CHOICE:-S}
+  if [[ "$REUSE_CHOICE" =~ ^[Ss]$ ]]; then
+    REUSE_EXISTING_CONFIG=true
+    echo -e "✅ ${GREEN}Reutilizando arquivos de configuração e Genesis existentes! Nenhuma nova criptografia será gerada.${NC}"
+    # Extract parameters for script generation
+    CHAIN_ID=$(grep -E "address-scheme-character\s*=" "$BLOCKCHAIN_CONF_PATH" | head -n 1 | sed -E 's/.*=[[:space:]]*"([^"]+)".*/\1/')
+    CHAIN_ID=${CHAIN_ID:-C}
+    P2P_PORT=$(sed -n '/network[[:space:]]*{/,/}/p' "$BLOCKCHAIN_CONF_PATH" | grep "port" | sed -E 's/.*=[[:space:]]*([0-9]+).*/\1/')
+    P2P_PORT=${P2P_PORT:-6868}
+    REST_API_PORT=$(sed -n '/rest-api[[:space:]]*{/,/}/p' "$BLOCKCHAIN_CONF_PATH" | grep "port" | sed -E 's/.*=[[:space:]]*([0-9]+).*/\1/')
+    REST_API_PORT=${REST_API_PORT:-6869}
+    GRPC_PORT=$(sed -n '/integration[[:space:]]*{/,/}/p' "$BLOCKCHAIN_CONF_PATH" | grep "port" | sed -E 's/.*=[[:space:]]*([0-9]+).*/\1/')
+    GRPC_PORT=${GRPC_PORT:-6887}
+    MATCHER_PORT=$(sed -n '/rest-api[[:space:]]*{/,/}/p' "$MATCHER_CONF_PATH" | grep "port" | sed -E 's/.*=[[:space:]]*([0-9]+).*/\1/')
+    MATCHER_PORT=${MATCHER_PORT:-6886}
+    BLOCKCHAIN_UPDATES_PORT=$(grep -A 2 "blockchain-updates-grpc" "$MATCHER_CONF_PATH" | grep "target" | sed -E 's/.*:([0-9]+)".*/\1/')
+    BLOCKCHAIN_UPDATES_PORT=${BLOCKCHAIN_UPDATES_PORT:-6881}
+    GENESIS_ADDRESS=$(grep -oE "3[A-Za-z0-9]{34}" "$BLOCKCHAIN_CONF_PATH" | head -n 1)
+    GENESIS_ADDRESS=${GENESIS_ADDRESS:-"Desconhecido"}
+    COIN_NAME=$(grep -i "Native Coin:" "$BLOCKCHAIN_CONF_PATH" | sed -E 's/.*:[[:space:]]*(.*)/\1/')
+    COIN_NAME=${COIN_NAME:-"AMZX"}
+  else
+    echo -e "🔥 ${RED}Aviso: Gerando uma nova criptografia Genesis e sobrescrevendo as configurações antigas!${NC}"
+  fi
+fi
 
 echo
 echo -e "${YELLOW}${BOLD}--- 🌐 STEP 6b: CONFIGURE DOMAIN & SUBDOMAINS ---${NC}"
@@ -384,51 +525,24 @@ fi
 echo
 echo -e "${YELLOW}${BOLD}--- 🔑 STEP 7: GENERATING GENESIS CRYPTOGRAPHY ---${NC}"
 
-# Find the fat JAR file
-FAT_JAR="$WAVES_SRC_DIR/node/target/waves-all-1.6.3-DIRTY.jar"
-if [ ! -f "$FAT_JAR" ]; then
-  # Fallback search if path structure is slightly different (e.g. from git clone)
-  FAT_JAR=$(find "$WAVES_SRC_DIR" -name "waves-all*.jar" | head -n 1)
-  if [ -z "$FAT_JAR" ] || [ ! -f "$FAT_JAR" ]; then
-    echo -e "${RED}${BOLD}[ERROR] AMZX Node Fat JAR não foi encontrado em: $WAVES_SRC_DIR/node/target/${NC}"
-    echo -e "${YELLOW}Deseja realizar a compilação (Build) automática das suas pastas de código locais agora? [S/n]${NC}"
-    read -p "Sua escolha: " RUN_BUILD_LATE
-    RUN_BUILD_LATE=${RUN_BUILD_LATE:-S}
-    if [[ "$RUN_BUILD_LATE" =~ ^[Ss]$ ]]; then
-      echo -e "${CYAN}Compilando AMZX Node (sbt node/assembly)...${NC}"
-      cd "$WAVES_SRC_DIR"
-      JAVA_HOME=/usr/lib/jvm/java-1.17.0-openjdk-amd64 sbt node/assembly
-      if [ $? -ne 0 ]; then
-        echo -e "${RED}${BOLD}[ERROR] Falha ao compilar o AMZX Node.${NC}"
-        exit 1
-      fi
-      
-      FAT_JAR=$(find "$WAVES_SRC_DIR" -name "waves-all*.jar" | head -n 1)
-      if [ -z "$FAT_JAR" ] || [ ! -f "$FAT_JAR" ]; then
-        echo -e "${RED}${BOLD}[ERROR] JAR ainda não foi encontrado mesmo após compilação.${NC}"
-        exit 1
-      fi
-      
-      echo -e "${CYAN}Compiling AMZX Matcher DEX & Waves gRPC Extension...${NC}"
-      cd "$MATCHER_SRC_DIR"
-      JAVA_HOME=/usr/lib/jvm/java-1.17.0-openjdk-amd64 sbt "project dex" compile waves-ext/Universal/stage
-      if [ $? -ne 0 ]; then
-        echo -e "${RED}${BOLD}[ERROR] Falha ao compilar o Matcher DEX.${NC}"
-        exit 1
-      fi
-      
-      cd "$WIZARD_DIR"
-      echo -e "${GREEN}${BOLD}Compilações completadas com sucesso! Continuando configuração...${NC}"
-    else
-      echo -e "Please run compilation or ensure sbt assembly succeeded!"
-      exit 1
-    fi
+if [ "$REUSE_EXISTING_CONFIG" = true ]; then
+  echo -e "ℹ️  ${CYAN}Reutilizando configurações existentes. Pulando geração de novas chaves criptográficas Genesis.${NC}"
+  # Extrair o endereço de Genesis do arquivo existente usando regex (procurando padrão de endereço Waves de 35 caracteres iniciando com '3')
+  GENESIS_ADDRESS=$(grep -oE "3[A-Za-z0-9]{34}" "$BLOCKCHAIN_CONF_PATH" | head -n 1)
+  if [ -z "$GENESIS_ADDRESS" ]; then
+    GENESIS_ADDRESS="Endereço mantido da configuração atual"
   fi
-fi
+  echo -e "🛡️  ${GREEN}Endereço Genesis atual detectado:${NC} $GENESIS_ADDRESS"
+else
+  # Ensure FAT_JAR is defined and exists
+  if [ -z "$FAT_JAR" ] || [ ! -f "$FAT_JAR" ]; then
+    echo -e "${RED}${BOLD}[ERROR] AMZX Node Fat JAR não foi encontrado! Não é possível gerar a criptografia Genesis.${NC}"
+    exit 1
+  fi
 
-# Create temporary config
-GENERATOR_INPUT_CONF="$RUN_DIR/temp-generator.conf"
-cat <<EOF > "$GENERATOR_INPUT_CONF"
+  # Create temporary config
+  GENERATOR_INPUT_CONF="$RUN_DIR/temp-generator.conf"
+  cat <<EOF > "$GENERATOR_INPUT_CONF"
 genesis-generator {
   network-type = "$CHAIN_ID"
   base-target = null
@@ -440,29 +554,30 @@ genesis-generator {
 }
 EOF
 
-# Run Genesis Generator via compiled classpath
-GENERATOR_OUTPUT_RAW="$RUN_DIR/temp-generator-out.txt"
-GENERATOR_GENESIS_CONF="$RUN_DIR/temp-genesis-out.conf"
+  # Run Genesis Generator via compiled classpath
+  GENERATOR_OUTPUT_RAW="$RUN_DIR/temp-generator-out.txt"
+  GENERATOR_GENESIS_CONF="$RUN_DIR/temp-genesis-out.conf"
 
-java -cp "$FAT_JAR" com.wavesplatform.GenesisBlockGenerator "$GENERATOR_INPUT_CONF" "$GENERATOR_GENESIS_CONF" > "$GENERATOR_OUTPUT_RAW"
+  java -cp "$FAT_JAR" com.wavesplatform.GenesisBlockGenerator "$GENERATOR_INPUT_CONF" "$GENERATOR_GENESIS_CONF" > "$GENERATOR_OUTPUT_RAW"
 
-if [ $? -ne 0 ] || [ ! -f "$GENERATOR_GENESIS_CONF" ]; then
-  echo -e "${RED}${BOLD}[ERROR] Failed to generate genesis block settings.${NC}"
-  exit 1
+  if [ $? -ne 0 ] || [ ! -f "$GENERATOR_GENESIS_CONF" ]; then
+    echo -e "${RED}${BOLD}[ERROR] Failed to generate genesis block settings.${NC}"
+    exit 1
+  fi
+
+  GENESIS_ADDRESS=$(grep -i "Account address:" "$GENERATOR_OUTPUT_RAW" | awk -F': ' '{print $2}' | tr -d '[:space:]')
+  SEED_BASE58=$(grep -i "Seed:" "$GENERATOR_OUTPUT_RAW" | head -n 1 | awk -F': ' '{print $2}' | tr -d '[:space:]')
+  PUBLIC_KEY=$(grep -i "Public account key:" "$GENERATOR_OUTPUT_RAW" | awk -F': ' '{print $2}' | tr -d '[:space:]')
+  PRIVATE_KEY=$(grep -i "Private account key:" "$GENERATOR_OUTPUT_RAW" | awk -F': ' '{print $2}' | tr -d '[:space:]')
+
+  echo -e "${GREEN}${BOLD}Cryptographic materials successfully created!${NC}"
+  echo -e "--------------------------------------------------------"
+  echo -e "🔑 ${BOLD}Genesis Seed Base58:${NC} $SEED_BASE58"
+  echo -e "🔑 ${BOLD}Genesis Public Key:${NC}  $PUBLIC_KEY"
+  echo -e "🔑 ${BOLD}Genesis Private Key:${NC} $PRIVATE_KEY"
+  echo -e "🛡️ ${BOLD}Genesis Account Addr:${NC} $GENESIS_ADDRESS"
+  echo -e "--------------------------------------------------------"
 fi
-
-GENESIS_ADDRESS=$(grep -i "Account address:" "$GENERATOR_OUTPUT_RAW" | awk -F': ' '{print $2}' | tr -d '[:space:]')
-SEED_BASE58=$(grep -i "Seed:" "$GENERATOR_OUTPUT_RAW" | head -n 1 | awk -F': ' '{print $2}' | tr -d '[:space:]')
-PUBLIC_KEY=$(grep -i "Public account key:" "$GENERATOR_OUTPUT_RAW" | awk -F': ' '{print $2}' | tr -d '[:space:]')
-PRIVATE_KEY=$(grep -i "Private account key:" "$GENERATOR_OUTPUT_RAW" | awk -F': ' '{print $2}' | tr -d '[:space:]')
-
-echo -e "${GREEN}${BOLD}Cryptographic materials successfully created!${NC}"
-echo -e "--------------------------------------------------------"
-echo -e "🔑 ${BOLD}Genesis Seed Base58:${NC} $SEED_BASE58"
-echo -e "🔑 ${BOLD}Genesis Public Key:${NC}  $PUBLIC_KEY"
-echo -e "🔑 ${BOLD}Genesis Private Key:${NC} $PRIVATE_KEY"
-echo -e "🛡️ ${BOLD}Genesis Account Addr:${NC} $GENESIS_ADDRESS"
-echo -e "--------------------------------------------------------"
 
 # ------------------------------------------------------------------------------
 # STEP 8: Create configuration files
@@ -470,12 +585,15 @@ echo -e "--------------------------------------------------------"
 echo
 echo -e "${YELLOW}${BOLD}--- 📄 STEP 8: PROVISIONING CONFIGURATION FILES ---${NC}"
 
-GENESIS_BLOCK_CONTENT=$(cat "$GENERATOR_GENESIS_CONF")
+if [ "$REUSE_EXISTING_CONFIG" = true ]; then
+  echo -e "ℹ️  ${CYAN}Reutilizando arquivos de configuração existentes. Pulando geração de novos arquivos conf.${NC}"
+else
+  GENESIS_BLOCK_CONTENT=$(cat "$GENERATOR_GENESIS_CONF")
 
-# Computa o hash seguro (Keccak256(Blake2b256)) em Base58 da X-Api-Key definida pelo usuário
-echo -e "${CYAN}Criptografando Swagger REST API Key (X-Api-Key) com Keccak256(Blake2b256)...${NC}"
-TEMP_JAVA_DIR=$(mktemp -d -p "$RUN_DIR")
-cat <<EOF > "$TEMP_JAVA_DIR/HashGenerator.java"
+  # Computa o hash seguro (Keccak256(Blake2b256)) em Base58 da X-Api-Key definida pelo usuário
+  echo -e "${CYAN}Criptografando Swagger REST API Key (X-Api-Key) com Keccak256(Blake2b256)...${NC}"
+  TEMP_JAVA_DIR=$(mktemp -d -p "$RUN_DIR")
+  cat <<EOF > "$TEMP_JAVA_DIR/HashGenerator.java"
 public class HashGenerator {
     public static void main(String[] args) throws Exception {
         byte[] bytes = args[0].getBytes("UTF-8");
@@ -486,59 +604,57 @@ public class HashGenerator {
 }
 EOF
 
-javac -cp "$FAT_JAR" "$TEMP_JAVA_DIR/HashGenerator.java"
-API_KEY_HASH=$(java -cp "$TEMP_JAVA_DIR:$FAT_JAR" HashGenerator "$REST_API_KEY")
-rm -rf "$TEMP_JAVA_DIR"
+  javac -cp "$FAT_JAR" "$TEMP_JAVA_DIR/HashGenerator.java"
+  API_KEY_HASH=$(java -cp "$TEMP_JAVA_DIR:$FAT_JAR" HashGenerator "$REST_API_KEY")
+  rm -rf "$TEMP_JAVA_DIR"
 
-if [ -z "$API_KEY_HASH" ]; then
-  echo -e "${RED}${BOLD}[ERROR] Erro ao criptografar REST API Key.${NC}"
-  exit 1
-fi
-echo -e "🔒 REST API Key Hash gerada com sucesso: ${GREEN}$API_KEY_HASH${NC}"
+  if [ -z "$API_KEY_HASH" ]; then
+    echo -e "${RED}${BOLD}[ERROR] Erro ao criptografar REST API Key.${NC}"
+    exit 1
+  fi
+  echo -e "🔒 REST API Key Hash gerada com sucesso: ${GREEN}$API_KEY_HASH${NC}"
 
-BLOCKCHAIN_CONF_PATH="$RUN_DIR/blockchain.conf"
-MATCHER_CONF_PATH="$RUN_DIR/matcher.conf"
+  # Replace variables in Blockchain Config
+  sed \
+    -e "s|__NODE_DATA_DIR__|$RUN_DIR/node-data|g" \
+    -e "s|__CHAIN_ID__|$CHAIN_ID|g" \
+    -e "s|__P2P_PORT__|$P2P_PORT|g" \
+    -e "s|__NODE_NAME__|amz-node-$CHAIN_ID|g" \
+    -e "s|__WALLET_PASSWORD__|amzblockchainpassword123!|g" \
+    -e "s|__SEED_BASE58__|$SEED_BASE58|g" \
+    -e "s|__REST_API_PORT__|$REST_API_PORT|g" \
+    -e "s|__API_KEY_HASH__|$API_KEY_HASH|g" \
+    -e "s|__GRPC_PORT__|$GRPC_PORT|g" \
+    "$WIZARD_DIR/templates/custom-blockchain.conf.template" > "$BLOCKCHAIN_CONF_PATH"
 
-# Replace variables in Blockchain Config
-sed \
-  -e "s|__NODE_DATA_DIR__|$RUN_DIR/node-data|g" \
-  -e "s|__CHAIN_ID__|$CHAIN_ID|g" \
-  -e "s|__P2P_PORT__|$P2P_PORT|g" \
-  -e "s|__NODE_NAME__|amz-node-$CHAIN_ID|g" \
-  -e "s|__WALLET_PASSWORD__|amzblockchainpassword123!|g" \
-  -e "s|__SEED_BASE58__|$SEED_BASE58|g" \
-  -e "s|__REST_API_PORT__|$REST_API_PORT|g" \
-  -e "s|__API_KEY_HASH__|$API_KEY_HASH|g" \
-  -e "s|__GRPC_PORT__|$GRPC_PORT|g" \
-  "$WIZARD_DIR/templates/custom-blockchain.conf.template" > "$BLOCKCHAIN_CONF_PATH"
-
-python3 -c "
+  python3 -c "
 with open('$BLOCKCHAIN_CONF_PATH', 'r') as f:
     content = f.read()
 with open('$GENERATOR_GENESIS_CONF', 'r') as f:
     genesis = f.read()
 content = content.replace('__GENESIS_BLOCK_CONFIG__', genesis)
 with open('$BLOCKCHAIN_CONF_PATH', 'w') as f:
-    f.write(content)
+    f.write('# Native Coin: $COIN_NAME\n' + content)
 "
 
-# Replace variables in Matcher Config
-sed \
-  -e "s|__MATCHER_DATA_DIR__|$RUN_DIR/matcher-data|g" \
-  -e "s|__CHAIN_ID__|$CHAIN_ID|g" \
-  -e "s|__GRPC_PORT__|$GRPC_PORT|g" \
-  -e "s|__BLOCKCHAIN_UPDATES_PORT__|$BLOCKCHAIN_UPDATES_PORT|g" \
-  -e "s|__MATCHER_PORT__|$MATCHER_PORT|g" \
-  -e "s|__API_KEY_HASH__|$API_KEY_HASH|g" \
-  "$WIZARD_DIR/templates/custom-matcher.conf.template" > "$MATCHER_CONF_PATH"
+  # Replace variables in Matcher Config
+  sed \
+    -e "s|__MATCHER_DATA_DIR__|$RUN_DIR/matcher-data|g" \
+    -e "s|__CHAIN_ID__|$CHAIN_ID|g" \
+    -e "s|__GRPC_PORT__|$GRPC_PORT|g" \
+    -e "s|__BLOCKCHAIN_UPDATES_PORT__|$BLOCKCHAIN_UPDATES_PORT|g" \
+    -e "s|__MATCHER_PORT__|$MATCHER_PORT|g" \
+    -e "s|__API_KEY_HASH__|$API_KEY_HASH|g" \
+    "$WIZARD_DIR/templates/custom-matcher.conf.template" > "$MATCHER_CONF_PATH"
 
-# Secure the generated configuration files so that ONLY the current user can read/write them (chmod 600)
-chmod 600 "$BLOCKCHAIN_CONF_PATH" "$MATCHER_CONF_PATH"
+  # Secure the generated configuration files so that ONLY the current user can read/write them (chmod 600)
+  chmod 600 "$BLOCKCHAIN_CONF_PATH" "$MATCHER_CONF_PATH"
 
-echo -e "Created Node Config:    ${GREEN}$BLOCKCHAIN_CONF_PATH${NC}"
-echo -e "Created Matcher Config: ${GREEN}$MATCHER_CONF_PATH${NC}"
+  echo -e "Created Node Config:    ${GREEN}$BLOCKCHAIN_CONF_PATH${NC}"
+  echo -e "Created Matcher Config: ${GREEN}$MATCHER_CONF_PATH${NC}"
 
-rm -f "$GENERATOR_INPUT_CONF" "$GENERATOR_OUTPUT_RAW" "$GENERATOR_GENESIS_CONF"
+  rm -f "$GENERATOR_INPUT_CONF" "$GENERATOR_OUTPUT_RAW" "$GENERATOR_GENESIS_CONF"
+fi
 
 # ------------------------------------------------------------------------------
 # STEP 9: Generate orchestration startup scripts
