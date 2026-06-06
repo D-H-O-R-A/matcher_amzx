@@ -48,8 +48,19 @@ SUPPLY=${SUPPLY:-100000000}
 read -p "Tempo Médio entre Blocos (padrão '10' segundos): " BLOCK_DELAY
 BLOCK_DELAY=${BLOCK_DELAY:-10}
 
-read -p "API-Key Password das REST APIs (padrão 'ridethewaves!'): " API_KEY
-API_KEY=${API_KEY:-ridethewaves!}
+while true; do
+    read -p "API-Key Password das REST APIs (mínimo 10 caracteres): " API_KEY
+    if [ -z "$API_KEY" ]; then
+        echo -e "${RED}[ERRO] A senha não pode ser vazia.${NC}"
+    elif [ "$API_KEY" = "ridethewaves!" ]; then
+        echo -e "${RED}[ERRO] A senha padrão 'ridethewaves!' é proibida e bloqueada pelo node. Escolha uma senha segura.${NC}"
+    elif [ ${#API_KEY} -lt 10 ]; then
+        echo -e "${RED}[ERRO] A senha precisa ter pelo menos 10 caracteres para garantir a segurança da rede.${NC}"
+    else
+        echo -e "${GREEN}[OK] Senha de acesso REST API definida com sucesso!${NC}"
+        break
+    fi
+done
 
 read -p "Senha de Segurança da Wallet Admin (padrão 'amzblockchainpassword123!'): " WALLET_PWD
 WALLET_PWD=${WALLET_PWD:-amzblockchainpassword123!}

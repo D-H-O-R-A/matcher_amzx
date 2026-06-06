@@ -237,16 +237,59 @@ read -p "Matcher DEX REST API Port [default: 6886]: " MATCHER_PORT
 MATCHER_PORT=${MATCHER_PORT:-6886}
 
 echo
+echo -e "${YELLOW}${BOLD}--- 🛡️ STEP 5b: CONFIGURE REST API SECURITY ---${NC}"
+echo -e "Você é obrigado a definir uma senha de acesso personalizada e segura para a REST API do Swagger (X-Api-Key)."
+echo -e "Esta chave protege o acesso a endpoints altamente sensíveis do nó, como os que expõem a seed (semente) da carteira."
+echo -e "${RED}${BOLD}IMPORTANTE:${NC} O uso da senha padrão 'ridethewaves!' é proibido pelo próprio nó para evitar falhas graves de segurança."
+echo
+
+while true; do
+  read -p "Digite a sua nova Swagger REST API Key (mínimo 10 caracteres): " REST_API_KEY
+  if [ -z "$REST_API_KEY" ]; then
+    echo -e "${RED}⚠️  Erro: A senha não pode ser vazia.${NC}"
+  elif [ "$REST_API_KEY" = "ridethewaves!" ]; then
+    echo -e "${RED}⚠️  Erro: A senha padrão 'ridethewaves!' é proibida e bloqueada pelo node. Escolha uma senha personalizada e segura.${NC}"
+  elif [ ${#REST_API_KEY} -lt 10 ]; then
+    echo -e "${RED}⚠️  Erro: A senha precisa ter pelo menos 10 caracteres para garantir a segurança da rede.${NC}"
+  else
+    echo -e "${GREEN}✅ Senha de acesso REST API definida com sucesso!${NC}"
+    break
+  fi
+  echo
+done
+
+echo
 echo -e "${YELLOW}${BOLD}--- 📂 STEP 6: CONFIGURE RUN DATA DIRECTORIES ---${NC}"
 read -p "Enter Run Directory name [default: run-amzx-$CHAIN_ID]: " RUN_DIR_NAME
 RUN_DIR_NAME=${RUN_DIR_NAME:-run-amzx-$CHAIN_ID}
 RUN_DIR="$WIZARD_DIR/$RUN_DIR_NAME"
 
 echo
+echo -e "${YELLOW}${BOLD}--- 🌐 STEP 6b: CONFIGURE DOMAIN & SUBDOMAINS ---${NC}"
+read -p "Do you want to configure Nginx Reverse Proxy with SSL/Certbot for this network? [y/N]: " CONFIGURE_NGINX
+CONFIGURE_NGINX=${CONFIGURE_NGINX:-N}
+
+BASE_DOMAIN=""
+CERTBOT_EMAIL=""
+if [[ "$CONFIGURE_NGINX" =~ ^[Yy]$ ]]; then
+  read -p "Enter base domain (e.g. amzxblockchain.com.br): " BASE_DOMAIN
+  while [ -z "$BASE_DOMAIN" ]; do
+    read -p "Domain cannot be empty. Enter base domain (e.g. amzxblockchain.com.br): " BASE_DOMAIN
+  done
+  read -p "Enter contact email for Certbot SSL expiration alerts: " CERTBOT_EMAIL
+  while [ -z "$CERTBOT_EMAIL" ]; do
+    read -p "Email cannot be empty. Enter contact email for Certbot: " CERTBOT_EMAIL
+  done
+fi
+
+echo
 echo -e "${CYAN}Creating directories under ${BOLD}$RUN_DIR${NC}..."
 mkdir -p "$RUN_DIR/node-data"
 mkdir -p "$RUN_DIR/matcher-data"
 mkdir -p "$RUN_DIR/lib"
+
+# Hardening file system permissions to protect sensitive cryptographic materials (Seed, Keys, databases)
+chmod 700 "$RUN_DIR"
 
 # Copy DEX extensions/libs if available in current project
 if [ -d "$PROJECT_ROOT/custom-network/lib" ]; then
@@ -317,7 +360,30 @@ echo
 echo -e "${YELLOW}${BOLD}--- 📄 STEP 8: PROVISIONING CONFIGURATION FILES ---${NC}"
 
 GENESIS_BLOCK_CONTENT=$(cat "$GENERATOR_GENESIS_CONF")
-API_KEY_HASH="7B74gZMpdzQSB45A7KRwKW6mDUYaWhFY8kWh5qiLRRoA" # default "ridethewaves!" Blake2b hash
+
+# Computa o hash seguro (Keccak256(Blake2b256)) em Base58 da X-Api-Key definida pelo usuário
+echo -e "${CYAN}Criptografando Swagger REST API Key (X-Api-Key) com Keccak256(Blake2b256)...${NC}"
+TEMP_JAVA_DIR=$(mktemp -d -p "$RUN_DIR")
+cat <<EOF > "$TEMP_JAVA_DIR/HashGenerator.java"
+public class HashGenerator {
+    public static void main(String[] args) throws Exception {
+        byte[] bytes = args[0].getBytes("UTF-8");
+        byte[] hashed = com.wavesplatform.crypto.package$.MODULE$.secureHash(bytes);
+        String base58 = com.wavesplatform.common.utils.Base58$.MODULE$.encode(hashed);
+        System.out.println(base58);
+    }
+}
+EOF
+
+javac -cp "$FAT_JAR" "$TEMP_JAVA_DIR/HashGenerator.java"
+API_KEY_HASH=$(java -cp "$TEMP_JAVA_DIR:$FAT_JAR" HashGenerator "$REST_API_KEY")
+rm -rf "$TEMP_JAVA_DIR"
+
+if [ -z "$API_KEY_HASH" ]; then
+  echo -e "${RED}${BOLD}[ERROR] Erro ao criptografar REST API Key.${NC}"
+  exit 1
+fi
+echo -e "🔒 REST API Key Hash gerada com sucesso: ${GREEN}$API_KEY_HASH${NC}"
 
 BLOCKCHAIN_CONF_PATH="$RUN_DIR/blockchain.conf"
 MATCHER_CONF_PATH="$RUN_DIR/matcher.conf"
@@ -347,6 +413,9 @@ sed \
   -e "s|__API_KEY_HASH__|$API_KEY_HASH|g" \
   "$WIZARD_DIR/templates/custom-matcher.conf.template" > "$MATCHER_CONF_PATH"
 
+# Secure the generated configuration files so that ONLY the current user can read/write them (chmod 600)
+chmod 600 "$BLOCKCHAIN_CONF_PATH" "$MATCHER_CONF_PATH"
+
 echo -e "Created Node Config:    ${GREEN}$BLOCKCHAIN_CONF_PATH${NC}"
 echo -e "Created Matcher Config: ${GREEN}$MATCHER_CONF_PATH${NC}"
 
@@ -375,7 +444,7 @@ java \\
   -cp "$FAT_JAR:$RUN_DIR/lib/*" \\
   com.wavesplatform.Application "$BLOCKCHAIN_CONF_PATH"
 EOF
-chmod +x "$START_NODE_SCRIPT"
+chmod 700 "$START_NODE_SCRIPT"
 
 # Start Matcher script
 START_MATCHER_SCRIPT="$RUN_DIR/start-matcher.sh"
@@ -391,11 +460,186 @@ export PATH=\$JAVA_HOME/bin:\$PATH
 cd "$MATCHER_SRC_DIR"
 sbt "project dex" "run $MATCHER_CONF_PATH"
 EOF
-chmod +x "$START_MATCHER_SCRIPT"
+chmod 700 "$START_MATCHER_SCRIPT"
 
 echo -e "Created startup scripts:"
 echo -e " - Node launch:    ${CYAN}$START_NODE_SCRIPT${NC}"
 echo -e " - Matcher launch: ${CYAN}$START_MATCHER_SCRIPT${NC}"
+
+if [ -n "$BASE_DOMAIN" ]; then
+  NGINX_CONF_PATH="$RUN_DIR/nginx-amzx.conf"
+  cat <<EOF > "$NGINX_CONF_PATH"
+# ==============================================================================
+# NGINX REVERSE PROXY CONFIGURATION FOR AMZX PRIVATE NETWORK (Chain ID '$CHAIN_ID')
+# ==============================================================================
+# Configures HTTP, HTTPS and gRPC proxies for blockchain subdomains.
+# ------------------------------------------------------------------------------
+
+# 1. API Restful Blockchain Node Swagger
+server {
+    listen 80;
+    server_name nodes.$BASE_DOMAIN;
+
+    location / {
+        proxy_pass http://127.0.0.1:$REST_API_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        
+        # Max request size (e.g. for uploading packages or large data)
+        client_max_body_size 50M;
+    }
+}
+
+# 2. API Restful Matcher Swagger
+server {
+    listen 80;
+    server_name matcher.$BASE_DOMAIN;
+
+    location / {
+        proxy_pass http://127.0.0.1:$MATCHER_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+
+# 3. RPC Ethereum MetaMask (Proxy directly to Node REST API /eth endpoint)
+server {
+    listen 80;
+    server_name rpc.$BASE_DOMAIN;
+
+    location / {
+        proxy_pass http://127.0.0.1:$REST_API_PORT/eth/;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+
+# 4. gRPC Blockchain Node Extension (Matcher Integration)
+server {
+    listen 80;
+    server_name grpc-dex.$BASE_DOMAIN;
+
+    location / {
+        grpc_pass grpc://127.0.0.1:$GRPC_PORT;
+        grpc_set_header Host \$host;
+        grpc_set_header X-Real-IP \$remote_addr;
+    }
+}
+
+# 5. gRPC Blockchain Updates Stream
+server {
+    listen 80;
+    server_name grpc-updates.$BASE_DOMAIN;
+
+    location / {
+        grpc_pass grpc://127.0.0.1:$BLOCKCHAIN_UPDATES_PORT;
+        grpc_set_header Host \$host;
+        grpc_set_header X-Real-IP \$remote_addr;
+    }
+}
+EOF
+
+  SETUP_SSL_SCRIPT="$RUN_DIR/setup-nginx-ssl.sh"
+  cat <<EOF > "$SETUP_SSL_SCRIPT"
+#!/usr/bin/env bash
+# Automated Nginx & Certbot SSL setup script for AMZX Network
+# ==============================================================================
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+CYAN='\033[0;36m'
+YELLOW='\033[1;33m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+echo -e "\${CYAN}\${BOLD}==============================================================================\${NC}"
+echo -e "\${CYAN}\${BOLD}         🛡️  AMZX NGINX REVERSE PROXY & CERTBOT SSL AUTO-SETUP  🛡️         \${NC}"
+echo -e "\${CYAN}\${BOLD}==============================================================================\${NC}"
+echo
+
+# Check for Nginx
+if ! command -v nginx &> /dev/null; then
+  echo -e "\${YELLOW}Nginx is not installed. Installing Nginx...\${NC}"
+  sudo apt-get update && sudo apt-get install -y nginx
+fi
+
+# Check for Certbot
+if ! command -v certbot &> /dev/null; then
+  echo -e "\${YELLOW}Certbot is not installed. Installing Certbot...\${NC}"
+  sudo apt-get update && sudo apt-get install -y certbot python3-certbot-nginx
+fi
+
+# Copy Nginx configuration
+echo -e "\${CYAN}Copying Nginx configuration for '$BASE_DOMAIN'...\${NC}"
+sudo cp "$NGINX_CONF_PATH" "/etc/nginx/sites-available/nginx-amzx-$CHAIN_ID.conf"
+
+# Enable configuration via symlink
+if [ ! -f "/etc/nginx/sites-enabled/nginx-amzx-$CHAIN_ID.conf" ]; then
+  sudo ln -s "/etc/nginx/sites-available/nginx-amzx-$CHAIN_ID.conf" "/etc/nginx/sites-enabled/"
+fi
+
+# Test Nginx configuration
+echo -e "\${CYAN}Testing Nginx syntax...\${NC}"
+if sudo nginx -t; then
+  echo -e "\${GREEN}Nginx configuration is valid! Reloading Nginx...\${NC}"
+  sudo systemctl reload nginx
+else
+  echo -e "\${RED}[ERROR] Nginx configuration test failed. Please check the logs.\${NC}"
+  exit 1
+fi
+
+# Configure Certbot SSL certificates
+echo
+echo -e "\${YELLOW}\${BOLD}--- 🔑 ACQUIRING SSL CERTIFICATES VIA CERTBOT ---\${NC}"
+echo -e "Domains: nodes.$BASE_DOMAIN, matcher.$BASE_DOMAIN, rpc.$BASE_DOMAIN, grpc-dex.$BASE_DOMAIN, grpc-updates.$BASE_DOMAIN"
+echo -e "This will request certificates and automatically configure HTTPS redirection on Nginx."
+echo
+
+sudo certbot --nginx \\
+  -d nodes.$BASE_DOMAIN \\
+  -d matcher.$BASE_DOMAIN \\
+  -d rpc.$BASE_DOMAIN \\
+  -d grpc-dex.$BASE_DOMAIN \\
+  -d grpc-updates.$BASE_DOMAIN \\
+  --non-interactive \\
+  --agree-tos \\
+  -m $CERTBOT_EMAIL
+
+if [ \$? -eq 0 ]; then
+  echo
+  echo -e "\${GREEN}\${BOLD}==============================================================================\${NC}"
+  echo -e "\${GREEN}\${BOLD}                🎉 SSL CERTIFICATES OBTAINED SUCCESSFULLY! 🎉                \${NC}"
+  echo -e "\${GREEN}\${BOLD}==============================================================================\${NC}"
+  echo -e "All endpoints are now encrypted under HTTPS / secure gRPC (WSS/GRPCS):"
+  echo -e " - Node Swagger API:   \${CYAN}https://nodes.$BASE_DOMAIN/api-docs/index.html\${NC}"
+  echo -e " - Matcher Swagger API: \${CYAN}https://matcher.$BASE_DOMAIN/api-docs/index.html\${NC}"
+  echo -e " - MetaMask JSON-RPC:  \${CYAN}https://rpc.$BASE_DOMAIN\${NC}"
+  echo -e " - gRPC Control/DEX:   \${CYAN}https://grpc-dex.$BASE_DOMAIN (WSS/GRPCS:443)\${NC}"
+  echo -e " - gRPC Updates:       \${CYAN}https://grpc-updates.$BASE_DOMAIN (GRPCS:443)\${NC}"
+  echo -e "=============================================================================="
+else
+  echo -e "\${RED}[ERROR] Certbot failed to obtain SSL certificates. Please check your DNS records.\${NC}"
+  exit 1
+fi
+EOF
+  chmod 700 "$SETUP_SSL_SCRIPT" && chmod 600 "$NGINX_CONF_PATH"
+  
+  echo -e " - Nginx Config:   ${CYAN}$NGINX_CONF_PATH${NC}"
+  echo -e " - SSL Setup Tool: ${YELLOW}$SETUP_SSL_SCRIPT${NC}"
+fi
 
 echo
 echo -e "${GREEN}${BOLD}==============================================================================${NC}"
@@ -410,12 +654,27 @@ echo
 echo -e " ${BOLD}Terminal 2 (Matcher):${NC}"
 echo -e "   $ ${BOLD}$START_MATCHER_SCRIPT${NC}"
 echo
+
+if [ -n "$BASE_DOMAIN" ]; then
+  echo -e " ${BOLD}Terminal 3 (Nginx & SSL Auto-Setup):${NC}"
+  echo -e "   $ ${YELLOW}sudo $SETUP_SSL_SCRIPT${NC}"
+  echo
+fi
+
 echo -e " ${BOLD}Useful Addresses & Resources:${NC}"
-echo -e "  - Node API Swagger Documentation: ${BLUE}http://localhost:$REST_API_PORT/api-docs/index.html${NC}"
-echo -e "  - Matcher DEX API Swagger Docs:  ${BLUE}http://localhost:$MATCHER_PORT/api-docs/index.html${NC}"
+if [ -n "$BASE_DOMAIN" ]; then
+  echo -e "  - Node API Swagger Docs (HTTPS): ${BLUE}https://nodes.$BASE_DOMAIN/api-docs/index.html${NC}"
+  echo -e "  - Matcher API Swagger (HTTPS):  ${BLUE}https://matcher.$BASE_DOMAIN/api-docs/index.html${NC}"
+  echo -e "  - MetaMask JSON-RPC (HTTPS):    ${BLUE}https://rpc.$BASE_DOMAIN${NC}"
+  echo -e "  - Node API Swagger Docs (HTTP):  ${BLUE}http://localhost:$REST_API_PORT/api-docs/index.html${NC}"
+  echo -e "  - Matcher API Swagger (HTTP):   ${BLUE}http://localhost:$MATCHER_PORT/api-docs/index.html${NC}"
+else
+  echo -e "  - Node API Swagger Documentation: ${BLUE}http://localhost:$REST_API_PORT/api-docs/index.html${NC}"
+  echo -e "  - Matcher DEX API Swagger Docs:  ${BLUE}http://localhost:$MATCHER_PORT/api-docs/index.html${NC}"
+fi
 echo -e "  - Initial Miner Balance Account: ${MAGENTA}$GENESIS_ADDRESS${NC}"
 echo -e "  - Native Coin Asset Name:        ${YELLOW}$COIN_NAME${NC}"
-echo -e "  - REST API Password Key:        ${BOLD}ridethewaves!${NC}"
+echo -e "  - REST API Password Key (X-Api-Key): ${BOLD}$REST_API_KEY${NC}"
 echo
 echo -e "${GREEN}Have fun testing your decentralized AMZX Blockchain & Orderbook DEX!${NC}"
 echo -e "${GREEN}==============================================================================${NC}"
