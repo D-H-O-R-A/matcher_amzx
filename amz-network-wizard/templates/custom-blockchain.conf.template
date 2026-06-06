@@ -71,6 +71,17 @@ waves {
     port = __REST_API_PORT__
     # Base58 Blake2b hash of REST API Key
     api-key-hash = "__API_KEY_HASH__"
+    minimum-peers = 0
+  }
+
+  # Miner configuration for single-node private network (zero quorum required)
+  miner {
+    enable = yes
+    quorum = 0
+    interval-after-last-block-then-generation-is-allowed = 120h
+    micro-block-interval = 5s
+    minimal-generation-offset = 0s
+    private-keys = ["__PRIVATE_KEY__"]
   }
 
   # Load the Matcher DEX gRPC Integration and BlockchainUpdates Extensions

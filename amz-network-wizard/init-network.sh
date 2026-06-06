@@ -25,6 +25,59 @@ NC='\033[0m' # No Color
 WIZARD_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PROJECT_ROOT="$( cd "$WIZARD_DIR/.." && pwd )"
 
+# Dynamic JAVA_HOME finder for Java 17 (AMD64 & ARM64 compatible)
+find_java_home() {
+  if [ -z "$JAVA_HOME" ] || [ ! -d "$JAVA_HOME" ]; then
+    # Search /usr/lib/jvm for JDK 17
+    local jdk_path=""
+    jdk_path=$(find /usr/lib/jvm -maxdepth 1 -name "*java-1.17.0-openjdk*" -o -name "*openjdk-17*" | head -n 1)
+    if [ -n "$jdk_path" ] && [ -d "$jdk_path" ]; then
+      export JAVA_HOME="$jdk_path"
+    else
+      if command -v java &>/dev/null; then
+        local java_bin=""
+        java_bin=$(readlink -f "$(command -v java)")
+        export JAVA_HOME="${java_bin%/bin/java}"
+      fi
+    fi
+  fi
+  # Fallback
+  if [ -z "$JAVA_HOME" ] || [ ! -d "$JAVA_HOME" ]; then
+    export JAVA_HOME="/usr/lib/jvm/java-17-openjdk-amd64"
+  fi
+}
+find_java_home
+
+# Non-interactive package installer helper (supports VPS root & sudo)
+apt_install() {
+  local pkg=$1
+  echo -e "${CYAN}Installing $pkg...${NC}"
+  if [ "$EUID" -ne 0 ]; then
+    if command -v sudo &>/dev/null; then
+      sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "$pkg"
+    else
+      echo -e "${RED}Error: Root privileges or sudo required to install $pkg.${NC}"
+      exit 1
+    fi
+  else
+    DEBIAN_FRONTEND=noninteractive apt-get install -y "$pkg"
+  fi
+}
+
+apt_update() {
+  echo -e "${CYAN}Updating apt package index...${NC}"
+  if [ "$EUID" -ne 0 ]; then
+    if command -v sudo &>/dev/null; then
+      sudo apt-get update -y
+    else
+      echo -e "${RED}Error: Root privileges or sudo required to update packages.${NC}"
+      exit 1
+    fi
+  else
+    apt-get update -y
+  fi
+}
+
 clear
 echo -e "${CYAN}${BOLD}"
 echo "=============================================================================="
@@ -60,6 +113,38 @@ else
   echo -e "✅ ${GREEN}bc${NC} is installed."
 fi
 
+# Check curl
+if ! command -v curl &> /dev/null; then
+  echo -e "❌ ${RED}curl${NC} is not installed."
+  MISSING_DEPS+=("curl")
+else
+  echo -e "✅ ${GREEN}curl${NC} is installed."
+fi
+
+# Check gnupg
+if ! command -v gpg &> /dev/null; then
+  echo -e "❌ ${RED}gnupg${NC} is not installed."
+  MISSING_DEPS+=("gnupg")
+else
+  echo -e "✅ ${GREEN}gnupg${NC} is installed."
+fi
+
+# Check apt-transport-https
+if [ ! -f /usr/share/doc/apt-transport-https/copyright ] && ! dpkg -s apt-transport-https &>/dev/null; then
+  echo -e "❌ ${RED}apt-transport-https${NC} is not installed."
+  MISSING_DEPS+=("apt-transport-https")
+else
+  echo -e "✅ ${GREEN}apt-transport-https${NC} is installed."
+fi
+
+# Check Python3
+if ! command -v python3 &> /dev/null; then
+  echo -e "❌ ${RED}python3${NC} is not installed."
+  MISSING_DEPS+=("python3")
+else
+  echo -e "✅ ${GREEN}python3${NC} is installed."
+fi
+
 # Check Java 17
 JAVA_INSTALLED=false
 if command -v java &> /dev/null; then
@@ -92,28 +177,34 @@ if [ ${#MISSING_DEPS[@]} -ne 0 ]; then
   INSTALL_DEPS=${INSTALL_DEPS:-S}
   
   if [[ "$INSTALL_DEPS" =~ ^[Ss]$ ]]; then
-    echo -e "${CYAN}Running system dependency installation... (May require sudo password)${NC}"
-    sudo apt-get update
+    apt_update
     
-    # Install git, bc, openjdk-17-jdk, curl, gnupg if listed
+    # Install general utilities first
     for dep in "${MISSING_DEPS[@]}"; do
-      if [ "$dep" == "git" ] || [ "$dep" == "bc" ] || [ "$dep" == "openjdk-17-jdk" ]; then
-        echo -e "${CYAN}Installing $dep...${NC}"
-        sudo apt-get install -y "$dep"
+      if [ "$dep" != "sbt" ]; then
+        apt_install "$dep"
       fi
     done
     
     # Special handle for SBT installation on Ubuntu/Debian
     if [[ " ${MISSING_DEPS[*]} " =~ " sbt " ]]; then
       echo -e "${CYAN}Adding SBT Debian repository credentials...${NC}"
-      sudo apt-get install -y apt-transport-https curl gnupg
-      echo "deb https://repo.scala-sbt.org/scalasbt/debian all main" | sudo tee /etc/apt/sources.list.d/sbt.list
-      echo "deb https://repo.scala-sbt.org/scalasbt/debian /" | sudo tee /etc/apt/sources.list.d/sbt_old.list
-      curl -sL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x2EE0EA64E40A89B84B2DF73499E82A75642AC823" | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/sbt-signatures.gpg
-      sudo apt-get update
-      sudo apt-get install -y sbt
+      apt_install "apt-transport-https"
+      apt_install "curl"
+      apt_install "gnupg"
+      echo "deb https://repo.scala-sbt.org/scalasbt/debian all main" | ( [ "$EUID" -ne 0 ] && sudo tee /etc/apt/sources.list.d/sbt.list || tee /etc/apt/sources.list.d/sbt.list )
+      echo "deb https://repo.scala-sbt.org/scalasbt/debian /" | ( [ "$EUID" -ne 0 ] && sudo tee /etc/apt/sources.list.d/sbt_old.list || tee /etc/apt/sources.list.d/sbt_old.list )
+      if [ "$EUID" -ne 0 ]; then
+        curl -sL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x2EE0EA64E40A89B84B2DF73499E82A75642AC823" | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/sbt-signatures.gpg
+      else
+        curl -sL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x2EE0EA64E40A89B84B2DF73499E82A75642AC823" | gpg --dearmor -o /etc/apt/trusted.gpg.d/sbt-signatures.gpg
+      fi
+      apt_update
+      apt_install "sbt"
     fi
     
+    # Recalculate JAVA_HOME just in case it was installed now
+    find_java_home
     echo -e "${GREEN}${BOLD}Dependency installation completed!${NC}"
   else
     echo -e "${RED}${BOLD}Dependencies not met. The script might fail to clone or compile.${NC}"
@@ -190,24 +281,25 @@ if [[ "$CLONE_REPOS" =~ ^[Ss]$ ]]; then
   echo
   
   # Compile Blockchain
-  echo -e "${CYAN}Building AMZX Node fat JAR...${NC}"
+  echo -e "${CYAN}Building AMZX Node fat JAR and Scala 3 extensions...${NC}"
   cd "$WAVES_SRC_DIR"
-  JAVA_HOME=/usr/lib/jvm/java-1.17.0-openjdk-amd64 sbt node/assembly
+  JAVA_HOME="$JAVA_HOME" sbt node/assembly waves-ext/packageBin grpc-server/packageBin
   if [ $? -ne 0 ]; then
-    echo -e "${RED}${BOLD}[ERROR] Failed to compile AMZX Node.${NC}"
+    echo -e "${RED}${BOLD}[ERROR] Failed to compile AMZX Node and Extensions.${NC}"
     exit 1
   fi
   
   # Compile Matcher & DEX Waves Extension
-  echo -e "${CYAN}Compiling AMZX Matcher DEX & Waves gRPC Extension...${NC}"
+  echo -e "${CYAN}Compiling AMZX Matcher DEX...${NC}"
   cd "$MATCHER_SRC_DIR"
-  JAVA_HOME=/usr/lib/jvm/java-1.17.0-openjdk-amd64 sbt "project dex" compile waves-ext/Universal/stage
+  JAVA_HOME="$JAVA_HOME" sbt "project dex" compile
   if [ $? -ne 0 ]; then
     echo -e "${RED}${BOLD}[ERROR] Failed to compile AMZX Matcher.${NC}"
     exit 1
   fi
   
   echo -e "${GREEN}${BOLD}Compilation of cloned sources finished successfully!${NC}"
+  cd "$WIZARD_DIR"
 else
   echo -e "Proceeding with current pre-existing workspace folders: "
   echo -e "Blockchain Core: ${GREEN}$WAVES_SRC_DIR${NC}"
@@ -221,18 +313,18 @@ else
     echo -e "${YELLOW}${BOLD}--- 🛠️ COMPILING SOURCE CODE (SBT ASSEMBLY) ---${NC}"
     
     # Compile Blockchain
-    echo -e "${CYAN}Building AMZX Node fat JAR...${NC}"
+    echo -e "${CYAN}Building AMZX Node fat JAR and Scala 3 extensions...${NC}"
     cd "$WAVES_SRC_DIR"
-    JAVA_HOME=/usr/lib/jvm/java-1.17.0-openjdk-amd64 sbt node/assembly
+    JAVA_HOME="$JAVA_HOME" sbt node/assembly waves-ext/packageBin grpc-server/packageBin
     if [ $? -ne 0 ]; then
-      echo -e "${RED}${BOLD}[ERROR] Failed to compile AMZX Node.${NC}"
+      echo -e "${RED}${BOLD}[ERROR] Failed to compile AMZX Node and Extensions.${NC}"
       exit 1
     fi
     
     # Compile Matcher & DEX Waves Extension
-    echo -e "${CYAN}Compiling AMZX Matcher DEX & Waves gRPC Extension...${NC}"
+    echo -e "${CYAN}Compiling AMZX Matcher DEX...${NC}"
     cd "$MATCHER_SRC_DIR"
-    JAVA_HOME=/usr/lib/jvm/java-1.17.0-openjdk-amd64 sbt "project dex" compile waves-ext/Universal/stage
+    JAVA_HOME="$JAVA_HOME" sbt "project dex" compile
     if [ $? -ne 0 ]; then
       echo -e "${RED}${BOLD}[ERROR] Failed to compile AMZX Matcher.${NC}"
       exit 1
@@ -244,7 +336,7 @@ else
 fi
 
 # Ensure JVM parameters
-export JAVA_HOME=/usr/lib/jvm/java-1.17.0-openjdk-amd64
+export JAVA_HOME="$JAVA_HOME"
 export PATH=$JAVA_HOME/bin:$PATH
 
 # Locate the compiled AMZX Node Fat JAR (always search for it)
@@ -258,18 +350,18 @@ if [ -z "$FAT_JAR" ] || [ ! -f "$FAT_JAR" ]; then
   read -p "Deseja realizar a compilação (SBT assembly) automática agora? [S/n]: " RUN_BUILD_LATE
   RUN_BUILD_LATE=${RUN_BUILD_LATE:-S}
   if [[ "$RUN_BUILD_LATE" =~ ^[Ss]$ ]]; then
-    echo -e "${CYAN}Compilando AMZX Node (sbt node/assembly)...${NC}"
+    echo -e "${CYAN}Compilando AMZX Node e extensões (sbt node/assembly waves-ext/packageBin grpc-server/packageBin)...${NC}"
     cd "$WAVES_SRC_DIR"
-    JAVA_HOME=/usr/lib/jvm/java-1.17.0-openjdk-amd64 sbt node/assembly
+    JAVA_HOME="$JAVA_HOME" sbt node/assembly waves-ext/packageBin grpc-server/packageBin
     if [ $? -ne 0 ]; then
       echo -e "${RED}${BOLD}[ERROR] Falha ao compilar o AMZX Node.${NC}"
       exit 1
     fi
     FAT_JAR=$(find "$WAVES_SRC_DIR" -name "waves-all*.jar" | head -n 1)
     
-    echo -e "${CYAN}Compilando AMZX Matcher DEX (sbt waves-ext/Universal/stage)...${NC}"
+    echo -e "${CYAN}Compilando AMZX Matcher DEX...${NC}"
     cd "$MATCHER_SRC_DIR"
-    JAVA_HOME=/usr/lib/jvm/java-1.17.0-openjdk-amd64 sbt "project dex" compile waves-ext/Universal/stage
+    JAVA_HOME="$JAVA_HOME" sbt "project dex" compile
     if [ $? -ne 0 ]; then
       echo -e "${RED}${BOLD}[ERROR] Falha ao compilar o Matcher DEX.${NC}"
       exit 1
@@ -492,36 +584,71 @@ touch "$RUN_DIR/matcher-data/lp-accounts.txt"
 # Hardening file system permissions to protect sensitive cryptographic materials (Seed, Keys, databases)
 chmod 700 "$RUN_DIR"
 
-# Copy DEX extensions/libs if available in current project
+# Clean out any old/stale libraries from RUN_DIR/lib to prevent classpath pollution
+echo -e "${CYAN}Cleaning library folder ${BOLD}$RUN_DIR/lib${NC}..."
+rm -rf "$RUN_DIR/lib"/*
+
+# Copy DEX extensions/libs selectively if available in current project
 if [ -d "$PROJECT_ROOT/custom-network/lib" ]; then
-  echo -e "${GREEN}Copying DEX integration libraries...${NC}"
-  cp -r "$PROJECT_ROOT/custom-network/lib/"* "$RUN_DIR/lib/"
+  echo -e "${GREEN}Copying compatible non-Scala-2.x DEX integration libraries...${NC}"
+  for f in "$PROJECT_ROOT/custom-network/lib"/*.jar; do
+    filename=$(basename "$f")
+    # Exclude files containing _2.12, _2.13, waves-ext, waves-grpc-server
+    if [[ ! "$filename" =~ _2\.1[23] ]] && [[ ! "$filename" =~ waves-ext ]] && [[ ! "$filename" =~ waves-grpc-server ]]; then
+      cp "$f" "$RUN_DIR/lib/"
+    fi
+  done
 fi
 
-# Copy compiled waves-ext extension JARs dynamically from matcher project if they exist
-echo -e "${CYAN}Checking and copying compiled waves-ext libraries dynamically...${NC}"
-if [ -d "$MATCHER_SRC_DIR/waves-ext/target/universal/stage/lib" ]; then
-  echo -e "${GREEN}Copying compiled waves-ext libraries to $RUN_DIR/lib/...${NC}"
-  cp -r "$MATCHER_SRC_DIR/waves-ext/target/universal/stage/lib/"*.jar "$RUN_DIR/lib/"
-  echo -e "✅ ${GREEN}waves-ext libraries successfully copied!${NC}"
+# Copy compiled waves-ext and grpc-server extensions from waves repository (Scala 3)
+echo -e "${CYAN}Copying compiled waves-ext and grpc-server extensions (Scala 3)...${NC}"
+# Copy waves-ext jar
+WAVES_EXT_JAR=$(find "$WAVES_SRC_DIR/waves-ext/target" -name "waves-ext*.jar" | head -n 1)
+if [ -n "$WAVES_EXT_JAR" ] && [ -f "$WAVES_EXT_JAR" ]; then
+  cp "$WAVES_EXT_JAR" "$RUN_DIR/lib/"
+  echo -e "✅ ${GREEN}Copied waves-ext extension: $(basename "$WAVES_EXT_JAR")${NC}"
 else
-  # Se por algum motivo o stage/lib não foi criado, mas existe o assembly ou target comum
-  echo -e "${YELLOW}waves-ext stage/lib directory not found. Let's try compiling waves-ext directly...${NC}"
-  cd "$MATCHER_SRC_DIR"
-  JAVA_HOME=/usr/lib/jvm/java-1.17.0-openjdk-amd64 sbt waves-ext/Universal/stage
+  # On-demand build
+  echo -e "${YELLOW}waves-ext compiled jar not found. Attempting on-demand build of extensions...${NC}"
+  cd "$WAVES_SRC_DIR"
+  JAVA_HOME="$JAVA_HOME" sbt waves-ext/packageBin grpc-server/packageBin
   cd "$WIZARD_DIR"
-  if [ -d "$MATCHER_SRC_DIR/waves-ext/target/universal/stage/lib" ]; then
-    echo -e "${GREEN}Copying compiled waves-ext libraries after on-demand build...${NC}"
-    cp -r "$MATCHER_SRC_DIR/waves-ext/target/universal/stage/lib/"*.jar "$RUN_DIR/lib/"
-    echo -e "✅ ${GREEN}waves-ext libraries successfully copied!${NC}"
+  WAVES_EXT_JAR=$(find "$WAVES_SRC_DIR/waves-ext/target" -name "waves-ext*.jar" | head -n 1)
+  if [ -n "$WAVES_EXT_JAR" ] && [ -f "$WAVES_EXT_JAR" ]; then
+    cp "$WAVES_EXT_JAR" "$RUN_DIR/lib/"
+    echo -e "✅ ${GREEN}Copied waves-ext extension after compile: $(basename "$WAVES_EXT_JAR")${NC}"
   else
-    echo -e "${RED}${BOLD}[WARNING] waves-ext compiled libraries could not be found! The node might fail with ClassNotFoundException.${NC}"
+    echo -e "${RED}${BOLD}[ERROR] waves-ext compiled libraries could not be found! The node might fail with ClassNotFoundException.${NC}"
+    exit 1
   fi
 fi
 
-# Double safety-net: Garante que a biblioteca ficus essencial esteja presente na pasta lib do nó
-echo -e "${CYAN}Garantindo a presença de dependências essenciais da extensão (ficus, etc.)...${NC}"
-find ~/.cache/coursier/v1 ~/.ivy2/cache -name "*ficus*.jar" -exec cp {} "$RUN_DIR/lib/" \; 2>/dev/null
+# Copy grpc-server jar
+GRPC_SERVER_JAR=$(find "$WAVES_SRC_DIR/grpc-server/target" -name "waves-grpc-server*.jar" | head -n 1)
+if [ -n "$GRPC_SERVER_JAR" ] && [ -f "$GRPC_SERVER_JAR" ]; then
+  cp "$GRPC_SERVER_JAR" "$RUN_DIR/lib/"
+  echo -e "✅ ${GREEN}Copied waves-grpc-server extension: $(basename "$GRPC_SERVER_JAR")${NC}"
+else
+  # On-demand build (already done above, check again)
+  GRPC_SERVER_JAR=$(find "$WAVES_SRC_DIR/grpc-server/target" -name "waves-grpc-server*.jar" | head -n 1)
+  if [ -n "$GRPC_SERVER_JAR" ] && [ -f "$GRPC_SERVER_JAR" ]; then
+    cp "$GRPC_SERVER_JAR" "$RUN_DIR/lib/"
+    echo -e "✅ ${GREEN}Copied waves-grpc-server extension after compile: $(basename "$GRPC_SERVER_JAR")${NC}"
+  else
+    echo -e "${RED}${BOLD}[ERROR] waves-grpc-server compiled libraries could not be found! The node might fail with ClassNotFoundException.${NC}"
+    exit 1
+  fi
+fi
+
+# Copy ficus_3 dependency from SBT cache
+echo -e "${CYAN}Garantindo a presença de dependências essenciais da extensão (ficus_3, etc.)...${NC}"
+FICUS_JAR=$(find ~/.cache/coursier/v1 ~/.ivy2/cache -name "*ficus_3*.jar" 2>/dev/null | head -n 1)
+if [ -n "$FICUS_JAR" ] && [ -f "$FICUS_JAR" ]; then
+  cp "$FICUS_JAR" "$RUN_DIR/lib/"
+  echo -e "✅ ${GREEN}Copied ficus_3 dependency: $(basename "$FICUS_JAR")${NC}"
+else
+  echo -e "${YELLOW}Aviso: ficus_3.jar não foi encontrado no cache local do SBT. Tentando baixar ou localizar...${NC}"
+fi
 
 # ------------------------------------------------------------------------------
 # STEP 7: Generate Cryptographic Genesis settings
@@ -590,7 +717,70 @@ echo
 echo -e "${YELLOW}${BOLD}--- 📄 STEP 8: PROVISIONING CONFIGURATION FILES ---${NC}"
 
 if [ "$REUSE_EXISTING_CONFIG" = true ]; then
-  echo -e "ℹ️  ${CYAN}Reutilizando arquivos de configuração existentes. Pulando geração de novos arquivos conf.${NC}"
+  echo -e "ℹ️  ${CYAN}Reutilizando arquivos de configuração existentes. Atualizando parâmetros de mineração de nó único...${NC}"
+  # Extrair a seed em base58 do arquivo existente
+  SEED_BASE58=$(grep -E '^[[:space:]]*seed[[:space:]]*=' "$BLOCKCHAIN_CONF_PATH" | sed -E 's/.*=[[:space:]]*"([^"]+)".*/\1/')
+  
+  if [ -n "$SEED_BASE58" ] && [ -f "$FAT_JAR" ]; then
+    TEMP_JAVA_DIR=$(mktemp -d -p "$RUN_DIR")
+    cat <<EOF > "$TEMP_JAVA_DIR/KeyDeriver.java"
+public class KeyDeriver {
+    public static void main(String[] args) throws Exception {
+        scala.util.Either either = com.wavesplatform.account.KeyPair$.MODULE$.fromSeed(args[0]);
+        if (either.isRight()) {
+            com.wavesplatform.account.SeedKeyPair kp = (com.wavesplatform.account.SeedKeyPair) either.right().get();
+            String base58PrivKey = com.wavesplatform.common.utils.Base58$.MODULE$.encode(kp.privateKey().arr());
+            System.out.println(base58PrivKey);
+        } else {
+            System.err.println("Error deriving key");
+            System.exit(1);
+        }
+    }
+}
+EOF
+    javac -cp "$FAT_JAR" "$TEMP_JAVA_DIR/KeyDeriver.java"
+    PRIVATE_KEY=$(java -cp "$TEMP_JAVA_DIR:$FAT_JAR" KeyDeriver "$SEED_BASE58" 2>/dev/null)
+    rm -rf "$TEMP_JAVA_DIR"
+  fi
+
+  if [ -n "$PRIVATE_KEY" ]; then
+    echo -e "🛡️  ${GREEN}Chave privada Genesis recuperada com sucesso para mineração de nó único.${NC}"
+    BLOCKCHAIN_CONF_PATH="$BLOCKCHAIN_CONF_PATH" PRIVATE_KEY="$PRIVATE_KEY" python3 -c '
+import os, re
+blockchain_conf = os.environ["BLOCKCHAIN_CONF_PATH"]
+private_key = os.environ["PRIVATE_KEY"]
+
+with open(blockchain_conf, "r", encoding="utf-8") as f:
+    content = f.read()
+
+# 1. Update minimum-peers = 0 in rest-api
+if "minimum-peers" not in content:
+    rest_api_match = re.search(r"(rest-api\s*\{[^}]+api-key-hash\s*=[^\n]+)", content)
+    if rest_api_match:
+        target = rest_api_match.group(1)
+        content = content.replace(target, target + "\n    minimum-peers = 0")
+
+# 2. Update private-keys in miner block
+if "private-keys" in content:
+    content = re.sub(r"private-keys\s*=\s*\[[^\]]*\]", f"private-keys = [\"{private_key}\"]", content)
+else:
+    miner_match = re.search(r"(miner\s*\{[^}]+minimal-generation-offset\s*=[^\n]+)", content)
+    if miner_match:
+        target = miner_match.group(1)
+        content = content.replace(target, target + f"\n    private-keys = [\"{private_key}\"]")
+    else:
+        miner_block = re.search(r"(miner\s*\{[^}]+)", content)
+        if miner_block:
+            target = miner_block.group(1)
+            content = content.replace(target, target + f"\n    private-keys = [\"{private_key}\"]")
+
+with open(blockchain_conf, "w", encoding="utf-8") as f:
+    f.write(content)
+'
+    echo -e "✅ ${GREEN}Parâmetros de mineração e rest-api atualizados com sucesso no blockchain.conf existente!${NC}"
+  else
+    echo -e "⚠️  ${YELLOW}Aviso: Não foi possível derivar a chave privada do Genesis. O nó existente pode não minerar automaticamente.${NC}"
+  fi
 else
   GENESIS_BLOCK_CONTENT=$(cat "$GENERATOR_GENESIS_CONF")
 
@@ -629,17 +819,23 @@ EOF
     -e "s|__REST_API_PORT__|$REST_API_PORT|g" \
     -e "s|__API_KEY_HASH__|$API_KEY_HASH|g" \
     -e "s|__GRPC_PORT__|$GRPC_PORT|g" \
+    -e "s|__PRIVATE_KEY__|$PRIVATE_KEY|g" \
     "$WIZARD_DIR/templates/custom-blockchain.conf.template" > "$BLOCKCHAIN_CONF_PATH"
 
-  python3 -c "
-with open('$BLOCKCHAIN_CONF_PATH', 'r') as f:
+  BLOCKCHAIN_CONF_PATH="$BLOCKCHAIN_CONF_PATH" GENERATOR_GENESIS_CONF="$GENERATOR_GENESIS_CONF" COIN_NAME="$COIN_NAME" python3 -c '
+import os
+blockchain_conf = os.environ["BLOCKCHAIN_CONF_PATH"]
+genesis_conf = os.environ["GENERATOR_GENESIS_CONF"]
+coin_name = os.environ["COIN_NAME"]
+
+with open(blockchain_conf, "r", encoding="utf-8") as f:
     content = f.read()
-with open('$GENERATOR_GENESIS_CONF', 'r') as f:
+with open(genesis_conf, "r", encoding="utf-8") as f:
     genesis = f.read()
-content = content.replace('__GENESIS_BLOCK_CONFIG__', genesis)
-with open('$BLOCKCHAIN_CONF_PATH', 'w') as f:
-    f.write('# Native Coin: $COIN_NAME\n' + content)
-"
+content = content.replace("__GENESIS_BLOCK_CONFIG__", genesis)
+with open(blockchain_conf, "w", encoding="utf-8") as f:
+    f.write(f"# Native Coin: {coin_name}\n" + content)
+'
 
   # Replace variables in Matcher Config
   sed \
@@ -674,7 +870,7 @@ cat <<EOF > "$START_NODE_SCRIPT"
 
 echo -e "\033[1;32mStarting AMZX Node with Chain ID '$CHAIN_ID' and REST API Port '$REST_API_PORT'...\033[0m"
 
-export JAVA_HOME=/usr/lib/jvm/java-1.17.0-openjdk-amd64
+export JAVA_HOME="$JAVA_HOME"
 export PATH=\$JAVA_HOME/bin:\$PATH
 
 java \\
@@ -693,7 +889,7 @@ cat <<EOF > "$START_MATCHER_SCRIPT"
 
 echo -e "\033[1;32mStarting AMZX Matcher DEX on REST Port '$MATCHER_PORT'...\033[0m"
 
-export JAVA_HOME=/usr/lib/jvm/java-1.17.0-openjdk-amd64
+export JAVA_HOME="$JAVA_HOME"
 export PATH=\$JAVA_HOME/bin:\$PATH
 
 cd "$MATCHER_SRC_DIR"
