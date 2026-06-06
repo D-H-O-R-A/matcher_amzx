@@ -169,7 +169,9 @@ object ExtensionPackaging extends AutoPlugin {
           case Some(artifact) =>
             val name = s"${artifact.organization}.${artifact.name}"
             exclusions.get(name) match {
-              case None => r // Ignore, because we doesn't provide custom artifacts (TAG ClassNotFoundException)
+              case None =>
+                val filename = getJarFullFilename(x)
+                (jarMapping.updated(x.data, s"lib/$filename"), conflicts)
               case Some(debRevision) =>
                 if (debRevision == artifact.revision) r
                 else (jarMapping, conflicts.updated(name, (debRevision, artifact.revision)))

@@ -519,6 +519,10 @@ else
   fi
 fi
 
+# Double safety-net: Garante que a biblioteca ficus essencial esteja presente na pasta lib do nó
+echo -e "${CYAN}Garantindo a presença de dependências essenciais da extensão (ficus, etc.)...${NC}"
+find ~/.cache/coursier/v1 ~/.ivy2/cache -name "*ficus*.jar" -exec cp {} "$RUN_DIR/lib/" \; 2>/dev/null
+
 # ------------------------------------------------------------------------------
 # STEP 7: Generate Cryptographic Genesis settings
 # ------------------------------------------------------------------------------
@@ -954,6 +958,34 @@ while [ $ELAPSED -lt $MAX_WAIT ]; do
   if [ "$MATCHER_ONLINE" = false ]; then
     if check_port "$MATCHER_PORT"; then
       MATCHER_ONLINE=true
+    fi
+  fi
+
+  # Check if Node died unexpectedly
+  if [ "$NODE_ALREADY_RUNNING" = false ] && [ "$NODE_ONLINE" = false ] && [ -n "$NODE_PID" ]; then
+    if ! kill -0 "$NODE_PID" &>/dev/null; then
+      echo -e "\n"
+      echo -e "⚠️  ${RED}${BOLD}[CRITICAL ERROR] O nó AMZX parou inesperadamente durante a inicialização!${NC}"
+      echo -e "❌ Processo $NODE_PID encerrou prematuramente."
+      echo -e "Últimas 30 linhas do log do nó ($RUN_DIR/node.log):"
+      echo -e "${YELLOW}------------------------------------------------------------------------${NC}"
+      tail -n 30 "$RUN_DIR/node.log"
+      echo -e "${YELLOW}------------------------------------------------------------------------${NC}"
+      exit 1
+    fi
+  fi
+
+  # Check if Matcher died unexpectedly
+  if [ "$MATCHER_ALREADY_RUNNING" = false ] && [ "$MATCHER_ONLINE" = false ] && [ -n "$MATCHER_PID" ]; then
+    if ! kill -0 "$MATCHER_PID" &>/dev/null; then
+      echo -e "\n"
+      echo -e "⚠️  ${RED}${BOLD}[CRITICAL ERROR] O Matcher DEX parou inesperadamente durante a inicialização!${NC}"
+      echo -e "❌ Processo $MATCHER_PID encerrou prematuramente."
+      echo -e "Últimas 30 linhas do log do Matcher ($RUN_DIR/matcher.log):"
+      echo -e "${YELLOW}------------------------------------------------------------------------${NC}"
+      tail -n 30 "$RUN_DIR/matcher.log"
+      echo -e "${YELLOW}------------------------------------------------------------------------${NC}"
+      exit 1
     fi
   fi
   
