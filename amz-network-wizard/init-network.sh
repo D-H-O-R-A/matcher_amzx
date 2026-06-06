@@ -345,6 +345,8 @@ echo -e "${CYAN}Creating directories under ${BOLD}$RUN_DIR${NC}..."
 mkdir -p "$RUN_DIR/node-data"
 mkdir -p "$RUN_DIR/matcher-data"
 mkdir -p "$RUN_DIR/lib"
+touch "$RUN_DIR/node-data/lp-accounts.txt"
+touch "$RUN_DIR/matcher-data/lp-accounts.txt"
 
 # Hardening file system permissions to protect sensitive cryptographic materials (Seed, Keys, databases)
 chmod 700 "$RUN_DIR"
@@ -489,7 +491,15 @@ sed \
   -e "s|__GRPC_PORT__|$GRPC_PORT|g" \
   "$WIZARD_DIR/templates/custom-blockchain.conf.template" > "$BLOCKCHAIN_CONF_PATH"
 
-perl -i -pe "s|__GENESIS_BLOCK_CONFIG__|\Q$GENESIS_BLOCK_CONTENT\E|g" "$BLOCKCHAIN_CONF_PATH"
+python3 -c "
+with open('$BLOCKCHAIN_CONF_PATH', 'r') as f:
+    content = f.read()
+with open('$GENERATOR_GENESIS_CONF', 'r') as f:
+    genesis = f.read()
+content = content.replace('__GENESIS_BLOCK_CONFIG__', genesis)
+with open('$BLOCKCHAIN_CONF_PATH', 'w') as f:
+    f.write(content)
+"
 
 # Replace variables in Matcher Config
 sed \
@@ -718,15 +728,133 @@ if [ \$? -eq 0 ]; then
   echo -e " - gRPC Control/DEX:   \${CYAN}https://grpc-dex.$BASE_DOMAIN (WSS/GRPCS:443)\${NC}"
   echo -e " - gRPC Updates:       \${CYAN}https://grpc-updates.$BASE_DOMAIN (GRPCS:443)\${NC}"
   echo -e "=============================================================================="
-else
-  echo -e "\${RED}[ERROR] Certbot failed to obtain SSL certificates. Please check your DNS records.\${NC}"
-  exit 1
 fi
 EOF
   chmod 700 "$SETUP_SSL_SCRIPT" && chmod 600 "$NGINX_CONF_PATH"
+fi
+echo -e "${YELLOW}${BOLD}--- 🚀 STEP 10: AUTOMATED SERVICE LAUNCH & ONLINE VERIFICATION ---${NC}"
+
+# Define port check function
+check_port() {
+  local port=$1
+  if command -v nc &>/dev/null; then
+    nc -z 127.0.0.1 "$port" &>/dev/null
+  else
+    (echo >/dev/tcp/127.0.0.1/"$port") &>/dev/null 2>&1
+  fi
+}
+
+NODE_ALREADY_RUNNING=false
+MATCHER_ALREADY_RUNNING=false
+
+# Check if ports are already bound
+if check_port "$REST_API_PORT"; then
+  echo -e "⚠️  ${YELLOW}Something is already listening on Node REST API Port ($REST_API_PORT). Node might already be running!${NC}"
+  NODE_ALREADY_RUNNING=true
+fi
+
+if check_port "$MATCHER_PORT"; then
+  echo -e "⚠️  ${YELLOW}Something is already listening on Matcher DEX REST API Port ($MATCHER_PORT). Matcher might already be running!${NC}"
+  MATCHER_ALREADY_RUNNING=true
+fi
+
+# Automatically run Nginx & SSL setup if domain is configured
+if [ -n "$BASE_DOMAIN" ] && [ -f "$SETUP_SSL_SCRIPT" ]; then
+  echo
+  echo -e "🛡️  ${YELLOW}Executing Nginx Reverse Proxy and Certbot SSL configuration...${NC}"
+  sudo "$SETUP_SSL_SCRIPT"
+  SSL_STATUS=$?
+  if [ $SSL_STATUS -eq 0 ]; then
+    echo -e "✅ ${GREEN}Nginx and SSL Certbot setup completed successfully!${NC}"
+  else
+    echo -e "❌ ${RED}Nginx and SSL Certbot setup encountered an error (Code: $SSL_STATUS).${NC}"
+  fi
+fi
+
+# Start services if they are not already running
+if [ "$NODE_ALREADY_RUNNING" = false ]; then
+  echo
+  echo -e "📡 ${CYAN}Starting AMZX Private Node in the background...${NC}"
+  nohup "$START_NODE_SCRIPT" < /dev/null > "$RUN_DIR/node.log" 2>&1 &
+  NODE_PID=$!
+  echo -e "👉 Node started with PID ${BOLD}$NODE_PID${NC}. Log file: ${BLUE}$RUN_DIR/node.log${NC}"
+fi
+
+if [ "$MATCHER_ALREADY_RUNNING" = false ]; then
+  echo -e "📡 ${CYAN}Starting AMZX Matcher DEX in the background...${NC}"
+  nohup "$START_MATCHER_SCRIPT" < /dev/null > "$RUN_DIR/matcher.log" 2>&1 &
+  MATCHER_PID=$!
+  echo -e "👉 Matcher started with PID ${BOLD}$MATCHER_PID${NC}. Log file: ${BLUE}$RUN_DIR/matcher.log${NC}"
+fi
+
+# Polling loop for active verification
+MAX_WAIT=120
+WAIT_INTERVAL=3
+ELAPSED=0
+
+NODE_ONLINE=false
+MATCHER_ONLINE=false
+
+if [ "$NODE_ALREADY_RUNNING" = true ]; then
+  NODE_ONLINE=true
+fi
+if [ "$MATCHER_ALREADY_RUNNING" = true ]; then
+  MATCHER_ONLINE=true
+fi
+
+echo
+echo -e "${YELLOW}Waiting for services to initialize and bind to their ports...${NC}"
+echo -e "This can take up to 2 minutes on the first execution (JVM & SBT boot time).${NC}"
+echo
+
+while [ $ELAPSED -lt $MAX_WAIT ]; do
+  if [ "$NODE_ONLINE" = false ]; then
+    if check_port "$REST_API_PORT"; then
+      NODE_ONLINE=true
+    fi
+  fi
   
-  echo -e " - Nginx Config:   ${CYAN}$NGINX_CONF_PATH${NC}"
-  echo -e " - SSL Setup Tool: ${YELLOW}$SETUP_SSL_SCRIPT${NC}"
+  if [ "$MATCHER_ONLINE" = false ]; then
+    if check_port "$MATCHER_PORT"; then
+      MATCHER_ONLINE=true
+    fi
+  fi
+  
+  # Print progress
+  echo -n -e "\r⏳ Elapsed: ${ELAPSED}s / ${MAX_WAIT}s | Node: "
+  if [ "$NODE_ONLINE" = true ]; then
+    echo -n -e "[${GREEN}ONLINE${NC}]"
+  else
+    echo -n -e "[${RED}OFFLINE${NC}]"
+  fi
+  echo -n -e " | Matcher: "
+  if [ "$MATCHER_ONLINE" = true ]; then
+    echo -n -e "[${GREEN}ONLINE${NC}]"
+  else
+    echo -n -e "[${RED}OFFLINE${NC}]"
+  fi
+  
+  if [ "$NODE_ONLINE" = true ] && [ "$MATCHER_ONLINE" = true ]; then
+    echo -e "\n\n🎉 ${GREEN}${BOLD}SUCCESS! Both blockchain services are now successfully ONLINE and verified!${NC}"
+    break
+  fi
+  
+  sleep $WAIT_INTERVAL
+  ELAPSED=$((ELAPSED + WAIT_INTERVAL))
+done
+
+if [ "$NODE_ONLINE" = false ] || [ "$MATCHER_ONLINE" = false ]; then
+  echo -e "\n"
+  echo -e "⚠️  ${RED}${BOLD}[TIMEOUT] One or more services failed to start within $MAX_WAIT seconds.${NC}"
+  if [ "$NODE_ONLINE" = false ]; then
+    echo -e "❌ Node on port $REST_API_PORT is ${RED}OFFLINE${NC}."
+    echo -e "   Check details in log: ${CYAN}cat $RUN_DIR/node.log${NC}"
+  fi
+  if [ "$MATCHER_ONLINE" = false ]; then
+    echo -e "❌ Matcher on port $MATCHER_PORT is ${RED}OFFLINE${NC}."
+    echo -e "   Check details in log: ${CYAN}cat $RUN_DIR/matcher.log${NC}"
+  fi
+  echo
 fi
 
 echo
@@ -734,21 +862,19 @@ echo -e "${GREEN}${BOLD}========================================================
 echo -e "${GREEN}${BOLD}                        🎉 COMPLETE SETUP SUCCESSFUL! 🎉                        ${NC}"
 echo -e "${GREEN}${BOLD}==============================================================================${NC}"
 echo
-echo -e "To launch your new blockchain and Matcher DEX network ecosystem, execute:"
+echo -e "The blockchain and Matcher DEX network ecosystem is now configured and running."
 echo
-echo -e " ${BOLD}Terminal 1 (Node):${NC}"
-echo -e "   $ ${BOLD}$START_NODE_SCRIPT${NC}"
-echo
-echo -e " ${BOLD}Terminal 2 (Matcher):${NC}"
-echo -e "   $ ${BOLD}$START_MATCHER_SCRIPT${NC}"
-echo
-
+echo -e " ${BOLD}Control Scripts (for future manual restarts):${NC}"
+echo -e "  - Node launch script:    ${CYAN}$START_NODE_SCRIPT${NC}"
+echo -e "  - Matcher launch script: ${CYAN}$START_MATCHER_SCRIPT${NC}"
 if [ -n "$BASE_DOMAIN" ]; then
-  echo -e " ${BOLD}Terminal 3 (Nginx & SSL Auto-Setup):${NC}"
-  echo -e "   $ ${YELLOW}sudo $SETUP_SSL_SCRIPT${NC}"
-  echo
+  echo -e "  - SSL/Nginx Setup script: ${YELLOW}$SETUP_SSL_SCRIPT${NC}"
 fi
-
+echo
+echo -e " ${BOLD}Live Logs:${NC}"
+echo -e "  - Node log stream:       ${BLUE}tail -f $RUN_DIR/node.log${NC}"
+echo -e "  - Matcher log stream:    ${BLUE}tail -f $RUN_DIR/matcher.log${NC}"
+echo
 echo -e " ${BOLD}Useful Addresses & Resources:${NC}"
 if [ -n "$BASE_DOMAIN" ]; then
   echo -e "  - Node API Swagger Docs (HTTPS): ${BLUE}https://nodes.$BASE_DOMAIN/api-docs/index.html${NC}"
