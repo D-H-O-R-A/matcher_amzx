@@ -139,6 +139,14 @@ CLONE_REPOS=${CLONE_REPOS:-N}
 WAVES_SRC_DIR="$PROJECT_ROOT/waves"
 MATCHER_SRC_DIR="$PROJECT_ROOT/matcher"
 
+# Auto-detect workspace folders if they are in the custom amzx-workspace directory (typically on VPS)
+if [ ! -d "$WAVES_SRC_DIR" ] && [ -d "$WIZARD_DIR/amzx-workspace/amzx" ]; then
+  WAVES_SRC_DIR="$WIZARD_DIR/amzx-workspace/amzx"
+fi
+if [ ! -d "$MATCHER_SRC_DIR" ] && [ -d "$WIZARD_DIR/amzx-workspace/matcher_amzx" ]; then
+  MATCHER_SRC_DIR="$WIZARD_DIR/amzx-workspace/matcher_amzx"
+fi
+
 # Se o usuário não estiver rodando no root e estiver na pasta padrão de documentos, ajustamos automaticamente os caminhos se existirem
 if [ ! -d "$WAVES_SRC_DIR" ] && [ -d "/home/diegooris/Documentos/amzblockchain/waves" ]; then
   WAVES_SRC_DIR="/home/diegooris/Documentos/amzblockchain/waves"

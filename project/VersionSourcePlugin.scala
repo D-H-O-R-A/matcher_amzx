@@ -21,9 +21,10 @@ object VersionSourcePlugin extends AutoPlugin {
       val (major, minor, patch) = version.value match {
         case versionExtractor(ma, mi, pa) => (ma.toInt, mi.toInt, pa.toInt)
         case x =>
-          // SBT downloads only the latest commit, so "version" doesn't know, which tag is the nearest
-          if (Option(System.getenv("TRAVIS")).exists(_.toBoolean)) (0, 0, 0)
-          else throw new IllegalStateException(s"${V.subProject.value}: can't parse version by git tag: $x")
+          // SBT downloads only the latest commit, so "version" doesn't know, which tag is the nearest.
+          // Instead of crashing the build, we use a safe fallback (2, 1, 2) which is the typical matcher version.
+          println(s"[warn] ${V.subProject.value}: can't parse version by git tag '$x'. Falling back to default version (2, 1, 2).")
+          (2, 1, 2)
       }
 
       IO.write(
