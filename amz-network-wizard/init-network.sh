@@ -409,7 +409,7 @@ cat <<EOF > "$GENERATOR_INPUT_CONF"
 genesis-generator {
   network-type = "$CHAIN_ID"
   base-target = null
-  average-block-delay = 10s
+  average-block-delay = 60s
   timestamp = $(date +%s%3N)
   distributions = [
     { seed-text = "$SEED", amount = $SUPPLY_SATOSHIS, miner = true }
