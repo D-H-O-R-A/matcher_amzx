@@ -133,10 +133,19 @@ echo -e "🔗 Matcher DEX:     ${BLUE}https://github.com/D-H-O-R-A/matcher_amzx.
 echo
 
 read -p "Do you want to clone clean repositories from Diego's GitHub to a fresh folder? [s/N]: " CLONE_REPOS
+COMPILE_PRE=${COMPILE_PRE:-N}
 CLONE_REPOS=${CLONE_REPOS:-N}
 
 WAVES_SRC_DIR="$PROJECT_ROOT/waves"
 MATCHER_SRC_DIR="$PROJECT_ROOT/matcher"
+
+# Se o usuário não estiver rodando no root e estiver na pasta padrão de documentos, ajustamos automaticamente os caminhos se existirem
+if [ ! -d "$WAVES_SRC_DIR" ] && [ -d "/home/diegooris/Documentos/amzblockchain/waves" ]; then
+  WAVES_SRC_DIR="/home/diegooris/Documentos/amzblockchain/waves"
+fi
+if [ ! -d "$MATCHER_SRC_DIR" ] && [ -d "/home/diegooris/Documentos/amzblockchain/matcher" ]; then
+  MATCHER_SRC_DIR="/home/diegooris/Documentos/amzblockchain/matcher"
+fi
 
 if [[ "$CLONE_REPOS" =~ ^[Ss]$ ]]; then
   read -p "Enter path/name for the new workspace folder [default: ./amzx-workspace]: " WORKSPACE_PATH
@@ -192,7 +201,38 @@ if [[ "$CLONE_REPOS" =~ ^[Ss]$ ]]; then
   
   echo -e "${GREEN}${BOLD}Compilation of cloned sources finished successfully!${NC}"
 else
-  echo -e "Proceeding with current pre-existing workspace folders."
+  echo -e "Proceeding with current pre-existing workspace folders: "
+  echo -e "Blockchain Core: ${GREEN}$WAVES_SRC_DIR${NC}"
+  echo -e "Matcher DEX:     ${GREEN}$MATCHER_SRC_DIR${NC}"
+  echo
+  
+  read -p "Do you want to compile (SBT build) your current pre-existing folders now? [s/N]: " COMPILE_PRE
+  COMPILE_PRE=${COMPILE_PRE:-N}
+  if [[ "$COMPILE_PRE" =~ ^[Ss]$ ]]; then
+    echo
+    echo -e "${YELLOW}${BOLD}--- 🛠️ COMPILING SOURCE CODE (SBT ASSEMBLY) ---${NC}"
+    
+    # Compile Blockchain
+    echo -e "${CYAN}Building AMZX Node fat JAR...${NC}"
+    cd "$WAVES_SRC_DIR"
+    JAVA_HOME=/usr/lib/jvm/java-1.17.0-openjdk-amd64 sbt node/assembly
+    if [ $? -ne 0 ]; then
+      echo -e "${RED}${BOLD}[ERROR] Failed to compile AMZX Node.${NC}"
+      exit 1
+    fi
+    
+    # Compile Matcher
+    echo -e "${CYAN}Compiling AMZX Matcher DEX...${NC}"
+    cd "$MATCHER_SRC_DIR"
+    JAVA_HOME=/usr/lib/jvm/java-1.17.0-openjdk-amd64 sbt "project dex" compile
+    if [ $? -ne 0 ]; then
+      echo -e "${RED}${BOLD}[ERROR] Failed to compile AMZX Matcher.${NC}"
+      exit 1
+    fi
+    
+    echo -e "${GREEN}${BOLD}Compilation of pre-existing sources finished successfully!${NC}"
+    cd "$WIZARD_DIR"
+  fi
 fi
 
 # Ensure JVM parameters
@@ -208,6 +248,16 @@ echo -e "${YELLOW}${BOLD}--- 🪙 STEP 4: CONFIGURE NETWORK PARAMETERS ---${NC}"
 read -p "Enter Network Character (Chain ID) [default: D]: " CHAIN_ID
 CHAIN_ID=${CHAIN_ID:-D}
 CHAIN_ID=$(echo "$CHAIN_ID" | tr '[:lower:]' '[:upper:]' | cut -c1)
+
+# Calcular formatos adicionais de Chain ID para compatibilidade com Ethereum/MetaMask
+ETH_CHAIN_ID_DEC=$(printf '%d' "'$CHAIN_ID")
+ETH_CHAIN_ID_HEX=$(printf '0x%02x' "$ETH_CHAIN_ID_DEC")
+
+echo -e "Configurações geradas para o Chain ID informado:"
+echo -e "👉 ${GREEN}Formato Waves (Caractere):${NC}       ${BOLD}$CHAIN_ID${NC}"
+echo -e "👉 ${GREEN}Formato Ethereum (MetaMask):${NC}     ${BOLD}$ETH_CHAIN_ID_DEC${NC}"
+echo -e "👉 ${GREEN}Formato Byte Ethereum (Hex):${NC}     ${BOLD}$ETH_CHAIN_ID_HEX${NC}"
+echo
 
 read -p "Enter Native Coin Name [default: AMZX]: " COIN_NAME
 COIN_NAME=${COIN_NAME:-AMZX}
@@ -309,9 +359,39 @@ if [ ! -f "$FAT_JAR" ]; then
   # Fallback search if path structure is slightly different (e.g. from git clone)
   FAT_JAR=$(find "$WAVES_SRC_DIR" -name "waves-all*.jar" | head -n 1)
   if [ -z "$FAT_JAR" ] || [ ! -f "$FAT_JAR" ]; then
-    echo -e "${RED}${BOLD}[ERROR] AMZX Node Fat JAR not found in: $WAVES_SRC_DIR/node/target/${NC}"
-    echo -e "Please run compilation or ensure sbt assembly succeeded!"
-    exit 1
+    echo -e "${RED}${BOLD}[ERROR] AMZX Node Fat JAR não foi encontrado em: $WAVES_SRC_DIR/node/target/${NC}"
+    echo -e "${YELLOW}Deseja realizar a compilação (Build) automática das suas pastas de código locais agora? [S/n]${NC}"
+    read -p "Sua escolha: " RUN_BUILD_LATE
+    RUN_BUILD_LATE=${RUN_BUILD_LATE:-S}
+    if [[ "$RUN_BUILD_LATE" =~ ^[Ss]$ ]]; then
+      echo -e "${CYAN}Compilando AMZX Node (sbt node/assembly)...${NC}"
+      cd "$WAVES_SRC_DIR"
+      JAVA_HOME=/usr/lib/jvm/java-1.17.0-openjdk-amd64 sbt node/assembly
+      if [ $? -ne 0 ]; then
+        echo -e "${RED}${BOLD}[ERROR] Falha ao compilar o AMZX Node.${NC}"
+        exit 1
+      fi
+      
+      FAT_JAR=$(find "$WAVES_SRC_DIR" -name "waves-all*.jar" | head -n 1)
+      if [ -z "$FAT_JAR" ] || [ ! -f "$FAT_JAR" ]; then
+        echo -e "${RED}${BOLD}[ERROR] JAR ainda não foi encontrado mesmo após compilação.${NC}"
+        exit 1
+      fi
+      
+      echo -e "${CYAN}Compilando AMZX Matcher DEX (sbt dex/compile)...${NC}"
+      cd "$MATCHER_SRC_DIR"
+      JAVA_HOME=/usr/lib/jvm/java-1.17.0-openjdk-amd64 sbt "project dex" compile
+      if [ $? -ne 0 ]; then
+        echo -e "${RED}${BOLD}[ERROR] Falha ao compilar o Matcher DEX.${NC}"
+        exit 1
+      fi
+      
+      cd "$WIZARD_DIR"
+      echo -e "${GREEN}${BOLD}Compilações completadas com sucesso! Continuando configuração...${NC}"
+    else
+      echo -e "Please run compilation or ensure sbt assembly succeeded!"
+      exit 1
+    fi
   fi
 fi
 
