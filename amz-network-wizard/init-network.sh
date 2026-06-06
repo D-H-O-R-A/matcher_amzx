@@ -198,10 +198,10 @@ if [[ "$CLONE_REPOS" =~ ^[Ss]$ ]]; then
     exit 1
   fi
   
-  # Compile Matcher
-  echo -e "${CYAN}Compiling AMZX Matcher DEX...${NC}"
+  # Compile Matcher & DEX Waves Extension
+  echo -e "${CYAN}Compiling AMZX Matcher DEX & Waves gRPC Extension...${NC}"
   cd "$MATCHER_SRC_DIR"
-  JAVA_HOME=/usr/lib/jvm/java-1.17.0-openjdk-amd64 sbt "project dex" compile
+  JAVA_HOME=/usr/lib/jvm/java-1.17.0-openjdk-amd64 sbt "project dex" compile waves-ext/Universal/stage
   if [ $? -ne 0 ]; then
     echo -e "${RED}${BOLD}[ERROR] Failed to compile AMZX Matcher.${NC}"
     exit 1
@@ -229,10 +229,10 @@ else
       exit 1
     fi
     
-    # Compile Matcher
-    echo -e "${CYAN}Compiling AMZX Matcher DEX...${NC}"
+    # Compile Matcher & DEX Waves Extension
+    echo -e "${CYAN}Compiling AMZX Matcher DEX & Waves gRPC Extension...${NC}"
     cd "$MATCHER_SRC_DIR"
-    JAVA_HOME=/usr/lib/jvm/java-1.17.0-openjdk-amd64 sbt "project dex" compile
+    JAVA_HOME=/usr/lib/jvm/java-1.17.0-openjdk-amd64 sbt "project dex" compile waves-ext/Universal/stage
     if [ $? -ne 0 ]; then
       echo -e "${RED}${BOLD}[ERROR] Failed to compile AMZX Matcher.${NC}"
       exit 1
@@ -357,6 +357,27 @@ if [ -d "$PROJECT_ROOT/custom-network/lib" ]; then
   cp -r "$PROJECT_ROOT/custom-network/lib/"* "$RUN_DIR/lib/"
 fi
 
+# Copy compiled waves-ext extension JARs dynamically from matcher project if they exist
+echo -e "${CYAN}Checking and copying compiled waves-ext libraries dynamically...${NC}"
+if [ -d "$MATCHER_SRC_DIR/waves-ext/target/universal/stage/lib" ]; then
+  echo -e "${GREEN}Copying compiled waves-ext libraries to $RUN_DIR/lib/...${NC}"
+  cp -r "$MATCHER_SRC_DIR/waves-ext/target/universal/stage/lib/"*.jar "$RUN_DIR/lib/"
+  echo -e "✅ ${GREEN}waves-ext libraries successfully copied!${NC}"
+else
+  # Se por algum motivo o stage/lib não foi criado, mas existe o assembly ou target comum
+  echo -e "${YELLOW}waves-ext stage/lib directory not found. Let's try compiling waves-ext directly...${NC}"
+  cd "$MATCHER_SRC_DIR"
+  JAVA_HOME=/usr/lib/jvm/java-1.17.0-openjdk-amd64 sbt waves-ext/Universal/stage
+  cd "$WIZARD_DIR"
+  if [ -d "$MATCHER_SRC_DIR/waves-ext/target/universal/stage/lib" ]; then
+    echo -e "${GREEN}Copying compiled waves-ext libraries after on-demand build...${NC}"
+    cp -r "$MATCHER_SRC_DIR/waves-ext/target/universal/stage/lib/"*.jar "$RUN_DIR/lib/"
+    echo -e "✅ ${GREEN}waves-ext libraries successfully copied!${NC}"
+  else
+    echo -e "${RED}${BOLD}[WARNING] waves-ext compiled libraries could not be found! The node might fail with ClassNotFoundException.${NC}"
+  fi
+fi
+
 # ------------------------------------------------------------------------------
 # STEP 7: Generate Cryptographic Genesis settings
 # ------------------------------------------------------------------------------
@@ -388,9 +409,9 @@ if [ ! -f "$FAT_JAR" ]; then
         exit 1
       fi
       
-      echo -e "${CYAN}Compilando AMZX Matcher DEX (sbt dex/compile)...${NC}"
+      echo -e "${CYAN}Compiling AMZX Matcher DEX & Waves gRPC Extension...${NC}"
       cd "$MATCHER_SRC_DIR"
-      JAVA_HOME=/usr/lib/jvm/java-1.17.0-openjdk-amd64 sbt "project dex" compile
+      JAVA_HOME=/usr/lib/jvm/java-1.17.0-openjdk-amd64 sbt "project dex" compile waves-ext/Universal/stage
       if [ $? -ne 0 ]; then
         echo -e "${RED}${BOLD}[ERROR] Falha ao compilar o Matcher DEX.${NC}"
         exit 1
