@@ -407,12 +407,12 @@ fi
 GENERATOR_INPUT_CONF="$RUN_DIR/temp-generator.conf"
 cat <<EOF > "$GENERATOR_INPUT_CONF"
 genesis-generator {
-  networkType = "$CHAIN_ID"
-  baseTarget = null
-  averageBlockDelay = 10s
+  network-type = "$CHAIN_ID"
+  base-target = null
+  average-block-delay = 10s
   timestamp = $(date +%s%3N)
   distributions = [
-    { seedText = "$SEED", amount = $SUPPLY_SATOSHIS, miner = true }
+    { seed-text = "$SEED", amount = $SUPPLY_SATOSHIS, miner = true }
   ]
 }
 EOF
