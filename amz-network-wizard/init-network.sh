@@ -283,7 +283,7 @@ if [[ "$CLONE_REPOS" =~ ^[Ss]$ ]]; then
   # Compile Blockchain
   echo -e "${CYAN}Building AMZX Node fat JAR and Scala 3 extensions...${NC}"
   cd "$WAVES_SRC_DIR"
-  JAVA_HOME="$JAVA_HOME" sbt node/assembly waves-ext/packageBin grpc-server/packageBin
+  JAVA_HOME="$JAVA_HOME" sbt node/assembly waves-ext/universal:stage grpc-server/universal:stage
   if [ $? -ne 0 ]; then
     echo -e "${RED}${BOLD}[ERROR] Failed to compile AMZX Node and Extensions.${NC}"
     exit 1
@@ -315,7 +315,7 @@ else
     # Compile Blockchain
     echo -e "${CYAN}Building AMZX Node fat JAR and Scala 3 extensions...${NC}"
     cd "$WAVES_SRC_DIR"
-    JAVA_HOME="$JAVA_HOME" sbt node/assembly waves-ext/packageBin grpc-server/packageBin
+    JAVA_HOME="$JAVA_HOME" sbt node/assembly waves-ext/universal:stage grpc-server/universal:stage
     if [ $? -ne 0 ]; then
       echo -e "${RED}${BOLD}[ERROR] Failed to compile AMZX Node and Extensions.${NC}"
       exit 1
@@ -350,9 +350,9 @@ if [ -z "$FAT_JAR" ] || [ ! -f "$FAT_JAR" ]; then
   read -p "Deseja realizar a compilação (SBT assembly) automática agora? [S/n]: " RUN_BUILD_LATE
   RUN_BUILD_LATE=${RUN_BUILD_LATE:-S}
   if [[ "$RUN_BUILD_LATE" =~ ^[Ss]$ ]]; then
-    echo -e "${CYAN}Compilando AMZX Node e extensões (sbt node/assembly waves-ext/packageBin grpc-server/packageBin)...${NC}"
+    echo -e "${CYAN}Compilando AMZX Node e extensões (sbt node/assembly waves-ext/universal:stage grpc-server/universal:stage)...${NC}"
     cd "$WAVES_SRC_DIR"
-    JAVA_HOME="$JAVA_HOME" sbt node/assembly waves-ext/packageBin grpc-server/packageBin
+    JAVA_HOME="$JAVA_HOME" sbt node/assembly waves-ext/universal:stage grpc-server/universal:stage
     if [ $? -ne 0 ]; then
       echo -e "${RED}${BOLD}[ERROR] Falha ao compilar o AMZX Node.${NC}"
       exit 1
@@ -602,52 +602,116 @@ fi
 
 # Copy compiled waves-ext and grpc-server extensions from waves repository (Scala 3)
 echo -e "${CYAN}Copying compiled waves-ext and grpc-server extensions (Scala 3)...${NC}"
-# Copy waves-ext jar
-WAVES_EXT_JAR=$(find "$WAVES_SRC_DIR/waves-ext/target" -name "waves-ext*.jar" | head -n 1)
-if [ -n "$WAVES_EXT_JAR" ] && [ -f "$WAVES_EXT_JAR" ]; then
-  cp "$WAVES_EXT_JAR" "$RUN_DIR/lib/"
-  echo -e "✅ ${GREEN}Copied waves-ext extension: $(basename "$WAVES_EXT_JAR")${NC}"
-else
-  # On-demand build
-  echo -e "${YELLOW}waves-ext compiled jar not found. Attempting on-demand build of extensions...${NC}"
-  cd "$WAVES_SRC_DIR"
-  JAVA_HOME="$JAVA_HOME" sbt waves-ext/packageBin grpc-server/packageBin
-  cd "$WIZARD_DIR"
+
+COPIED_FROM_STAGE=false
+
+# First layer: try to copy all dependencies and JARs from the staged universal folder if they exist
+WAVES_EXT_STAGE_DIR="$WAVES_SRC_DIR/waves-ext/target/universal/stage/lib"
+GRPC_SERVER_STAGE_DIR="$WAVES_SRC_DIR/grpc-server/target/universal/stage/lib"
+
+if [ -d "$WAVES_EXT_STAGE_DIR" ] && [ "$(find "$WAVES_EXT_STAGE_DIR" -name "*.jar" | wc -l)" -gt 0 ]; then
+  echo -e "${GREEN}Staged waves-ext libraries found. Copying all dependencies...${NC}"
+  cp "$WAVES_EXT_STAGE_DIR"/*.jar "$RUN_DIR/lib/"
+  COPIED_FROM_STAGE=true
+fi
+
+if [ -d "$GRPC_SERVER_STAGE_DIR" ] && [ "$(find "$GRPC_SERVER_STAGE_DIR" -name "*.jar" | wc -l)" -gt 0 ]; then
+  echo -e "${GREEN}Staged waves-grpc-server libraries found. Copying all dependencies...${NC}"
+  cp "$GRPC_SERVER_STAGE_DIR"/*.jar "$RUN_DIR/lib/"
+  COPIED_FROM_STAGE=true
+fi
+
+# If we successfully copied from stage, we don't need to do single-jar copying, but let's run it as fallback
+if [ "$COPIED_FROM_STAGE" = false ]; then
+  echo -e "${YELLOW}Stage libraries not found. Falling back to individual JAR copy...${NC}"
+  
+  # Copy waves-ext jar
   WAVES_EXT_JAR=$(find "$WAVES_SRC_DIR/waves-ext/target" -name "waves-ext*.jar" | head -n 1)
   if [ -n "$WAVES_EXT_JAR" ] && [ -f "$WAVES_EXT_JAR" ]; then
     cp "$WAVES_EXT_JAR" "$RUN_DIR/lib/"
-    echo -e "✅ ${GREEN}Copied waves-ext extension after compile: $(basename "$WAVES_EXT_JAR")${NC}"
+    echo -e "✅ ${GREEN}Copied waves-ext extension: $(basename "$WAVES_EXT_JAR")${NC}"
   else
-    echo -e "${RED}${BOLD}[ERROR] waves-ext compiled libraries could not be found! The node might fail with ClassNotFoundException.${NC}"
-    exit 1
+    # On-demand build
+    echo -e "${YELLOW}waves-ext compiled jar not found. Attempting on-demand build of extensions...${NC}"
+    cd "$WAVES_SRC_DIR"
+    JAVA_HOME="$JAVA_HOME" sbt waves-ext/universal:stage grpc-server/universal:stage
+    cd "$WIZARD_DIR"
+    
+    # Try copying from stage directory after build
+    if [ -d "$WAVES_EXT_STAGE_DIR" ] && [ "$(find "$WAVES_EXT_STAGE_DIR" -name "*.jar" | wc -l)" -gt 0 ]; then
+      cp "$WAVES_EXT_STAGE_DIR"/*.jar "$RUN_DIR/lib/"
+      COPIED_FROM_STAGE=true
+    fi
+    if [ -d "$GRPC_SERVER_STAGE_DIR" ] && [ "$(find "$GRPC_SERVER_STAGE_DIR" -name "*.jar" | wc -l)" -gt 0 ]; then
+      cp "$GRPC_SERVER_STAGE_DIR"/*.jar "$RUN_DIR/lib/"
+      COPIED_FROM_STAGE=true
+    fi
+    
+    if [ "$COPIED_FROM_STAGE" = false ]; then
+      # Double fallback to raw target jar
+      WAVES_EXT_JAR=$(find "$WAVES_SRC_DIR/waves-ext/target" -name "waves-ext*.jar" | head -n 1)
+      if [ -n "$WAVES_EXT_JAR" ] && [ -f "$WAVES_EXT_JAR" ]; then
+        cp "$WAVES_EXT_JAR" "$RUN_DIR/lib/"
+        echo -e "✅ ${GREEN}Copied waves-ext extension after compile: $(basename "$WAVES_EXT_JAR")${NC}"
+      else
+        echo -e "${RED}${BOLD}[ERROR] waves-ext compiled libraries could not be found! The node might fail with ClassNotFoundException.${NC}"
+        exit 1
+      fi
+    fi
+  fi
+
+  if [ "$COPIED_FROM_STAGE" = false ]; then
+    # Copy grpc-server jar
+    GRPC_SERVER_JAR=$(find "$WAVES_SRC_DIR/grpc-server/target" -name "waves-grpc-server*.jar" | head -n 1)
+    if [ -n "$GRPC_SERVER_JAR" ] && [ -f "$GRPC_SERVER_JAR" ]; then
+      cp "$GRPC_SERVER_JAR" "$RUN_DIR/lib/"
+      echo -e "✅ ${GREEN}Copied waves-grpc-server extension: $(basename "$GRPC_SERVER_JAR")${NC}"
+    else
+      # Try copying from raw target
+      GRPC_SERVER_JAR=$(find "$WAVES_SRC_DIR/grpc-server/target" -name "waves-grpc-server*.jar" | head -n 1)
+      if [ -n "$GRPC_SERVER_JAR" ] && [ -f "$GRPC_SERVER_JAR" ]; then
+        cp "$GRPC_SERVER_JAR" "$RUN_DIR/lib/"
+        echo -e "✅ ${GREEN}Copied waves-grpc-server extension after compile: $(basename "$GRPC_SERVER_JAR")${NC}"
+      else
+        echo -e "${RED}${BOLD}[ERROR] waves-grpc-server compiled libraries could not be found! The node might fail with ClassNotFoundException.${NC}"
+        exit 1
+      fi
+    fi
   fi
 fi
 
-# Copy grpc-server jar
-GRPC_SERVER_JAR=$(find "$WAVES_SRC_DIR/grpc-server/target" -name "waves-grpc-server*.jar" | head -n 1)
-if [ -n "$GRPC_SERVER_JAR" ] && [ -f "$GRPC_SERVER_JAR" ]; then
-  cp "$GRPC_SERVER_JAR" "$RUN_DIR/lib/"
-  echo -e "✅ ${GREEN}Copied waves-grpc-server extension: $(basename "$GRPC_SERVER_JAR")${NC}"
-else
-  # On-demand build (already done above, check again)
-  GRPC_SERVER_JAR=$(find "$WAVES_SRC_DIR/grpc-server/target" -name "waves-grpc-server*.jar" | head -n 1)
-  if [ -n "$GRPC_SERVER_JAR" ] && [ -f "$GRPC_SERVER_JAR" ]; then
-    cp "$GRPC_SERVER_JAR" "$RUN_DIR/lib/"
-    echo -e "✅ ${GREEN}Copied waves-grpc-server extension after compile: $(basename "$GRPC_SERVER_JAR")${NC}"
+# Always run the safety-net cache copier for crucial dependencies to guarantee they are present
+echo -e "${CYAN}Garantindo a presença de dependências essenciais da extensão (ficus_3, scalapb, etc.)...${NC}"
+
+# 1. ficus_3
+if [ ! -f "$RUN_DIR/lib/"*ficus*.jar ]; then
+  FICUS_JAR=$(find ~/.cache/coursier/v1 ~/.ivy2/cache -name "*ficus_3*.jar" 2>/dev/null | head -n 1)
+  if [ -n "$FICUS_JAR" ] && [ -f "$FICUS_JAR" ]; then
+    cp "$FICUS_JAR" "$RUN_DIR/lib/"
+    echo -e "✅ ${GREEN}Copied ficus_3 dependency: $(basename "$FICUS_JAR")${NC}"
   else
-    echo -e "${RED}${BOLD}[ERROR] waves-grpc-server compiled libraries could not be found! The node might fail with ClassNotFoundException.${NC}"
-    exit 1
+    echo -e "${YELLOW}Aviso: ficus_3.jar não foi encontrado no cache local do SBT.${NC}"
   fi
 fi
 
-# Copy ficus_3 dependency from SBT cache
-echo -e "${CYAN}Garantindo a presença de dependências essenciais da extensão (ficus_3, etc.)...${NC}"
-FICUS_JAR=$(find ~/.cache/coursier/v1 ~/.ivy2/cache -name "*ficus_3*.jar" 2>/dev/null | head -n 1)
-if [ -n "$FICUS_JAR" ] && [ -f "$FICUS_JAR" ]; then
-  cp "$FICUS_JAR" "$RUN_DIR/lib/"
-  echo -e "✅ ${GREEN}Copied ficus_3 dependency: $(basename "$FICUS_JAR")${NC}"
-else
-  echo -e "${YELLOW}Aviso: ficus_3.jar não foi encontrado no cache local do SBT. Tentando baixar ou localizar...${NC}"
+# 2. scalapb-runtime-grpc_3
+if [ ! -f "$RUN_DIR/lib/"*scalapb-runtime-grpc*.jar ]; then
+  SCALAPB_GRPC_JAR=$(find ~/.cache/coursier/v1 ~/.ivy2/cache -name "*scalapb-runtime-grpc_3*.jar" 2>/dev/null | head -n 1)
+  if [ -n "$SCALAPB_GRPC_JAR" ] && [ -f "$SCALAPB_GRPC_JAR" ]; then
+    cp "$SCALAPB_GRPC_JAR" "$RUN_DIR/lib/"
+    echo -e "✅ ${GREEN}Copied scalapb-runtime-grpc_3 dependency: $(basename "$SCALAPB_GRPC_JAR")${NC}"
+  else
+    echo -e "${YELLOW}Aviso: scalapb-runtime-grpc_3.jar não foi encontrado no cache local do SBT.${NC}"
+  fi
+fi
+
+# 3. scalapb-runtime_3 (also needed as transitives for scalapb)
+if [ ! -f "$RUN_DIR/lib/"*scalapb-runtime_3*.jar ]; then
+  SCALAPB_RUNTIME_JAR=$(find ~/.cache/coursier/v1 ~/.ivy2/cache -name "*scalapb-runtime_3*.jar" 2>/dev/null | head -n 1)
+  if [ -n "$SCALAPB_RUNTIME_JAR" ] && [ -f "$SCALAPB_RUNTIME_JAR" ]; then
+    cp "$SCALAPB_RUNTIME_JAR" "$RUN_DIR/lib/"
+    echo -e "✅ ${GREEN}Copied scalapb-runtime_3 dependency: $(basename "$SCALAPB_RUNTIME_JAR")${NC}"
+  fi
 fi
 
 # ------------------------------------------------------------------------------
@@ -730,7 +794,7 @@ public class KeyDeriver {
         if (either.isRight()) {
             com.wavesplatform.account.SeedKeyPair kp = (com.wavesplatform.account.SeedKeyPair) either.right().get();
             String base58PrivKey = com.wavesplatform.common.utils.Base58$.MODULE$.encode(kp.privateKey().arr());
-            System.out.println(base58PrivKey);
+            System.out.println("RESULT_KEY:" + base58PrivKey);
         } else {
             System.err.println("Error deriving key");
             System.exit(1);
@@ -739,7 +803,7 @@ public class KeyDeriver {
 }
 EOF
     javac -cp "$FAT_JAR" "$TEMP_JAVA_DIR/KeyDeriver.java"
-    PRIVATE_KEY=$(java -cp "$TEMP_JAVA_DIR:$FAT_JAR" KeyDeriver "$SEED_BASE58" 2>/dev/null)
+    PRIVATE_KEY=$(java -cp "$TEMP_JAVA_DIR:$FAT_JAR" KeyDeriver "$SEED_BASE58" 2>/dev/null | grep "RESULT_KEY:" | cut -d':' -f2 | tr -d '[:space:]')
     rm -rf "$TEMP_JAVA_DIR"
   fi
 
@@ -799,7 +863,7 @@ public class HashGenerator {
 EOF
 
   javac -cp "$FAT_JAR" "$TEMP_JAVA_DIR/HashGenerator.java"
-  API_KEY_HASH=$(java -cp "$TEMP_JAVA_DIR:$FAT_JAR" HashGenerator "$REST_API_KEY")
+  API_KEY_HASH=$(java -cp "$TEMP_JAVA_DIR:$FAT_JAR" HashGenerator "$REST_API_KEY" 2>/dev/null | tail -n 1 | tr -d '[:space:]')
   rm -rf "$TEMP_JAVA_DIR"
 
   if [ -z "$API_KEY_HASH" ]; then
@@ -1049,6 +1113,7 @@ sudo certbot --nginx \\
   -d rpc.$BASE_DOMAIN \\
   -d grpc-dex.$BASE_DOMAIN \\
   -d grpc-updates.$BASE_DOMAIN \\
+  --expand \\
   --non-interactive \\
   --agree-tos \\
   -m $CERTBOT_EMAIL
