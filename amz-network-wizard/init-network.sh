@@ -283,7 +283,7 @@ if [[ "$CLONE_REPOS" =~ ^[Ss]$ ]]; then
   # Compile Blockchain
   echo -e "${CYAN}Building AMZX Node fat JAR and Scala 3 extensions...${NC}"
   cd "$WAVES_SRC_DIR"
-  JAVA_HOME="$JAVA_HOME" sbt node/assembly waves-ext/universal:stage grpc-server/universal:stage
+  JAVA_HOME="$JAVA_HOME" sbt node/assembly waves-ext/packageBin grpc-server/universal:stage
   if [ $? -ne 0 ]; then
     echo -e "${RED}${BOLD}[ERROR] Failed to compile AMZX Node and Extensions.${NC}"
     exit 1
@@ -315,7 +315,7 @@ else
     # Compile Blockchain
     echo -e "${CYAN}Building AMZX Node fat JAR and Scala 3 extensions...${NC}"
     cd "$WAVES_SRC_DIR"
-    JAVA_HOME="$JAVA_HOME" sbt node/assembly waves-ext/universal:stage grpc-server/universal:stage
+    JAVA_HOME="$JAVA_HOME" sbt node/assembly waves-ext/packageBin grpc-server/universal:stage
     if [ $? -ne 0 ]; then
       echo -e "${RED}${BOLD}[ERROR] Failed to compile AMZX Node and Extensions.${NC}"
       exit 1
@@ -350,9 +350,9 @@ if [ -z "$FAT_JAR" ] || [ ! -f "$FAT_JAR" ]; then
   read -p "Deseja realizar a compilação (SBT assembly) automática agora? [S/n]: " RUN_BUILD_LATE
   RUN_BUILD_LATE=${RUN_BUILD_LATE:-S}
   if [[ "$RUN_BUILD_LATE" =~ ^[Ss]$ ]]; then
-    echo -e "${CYAN}Compilando AMZX Node e extensões (sbt node/assembly waves-ext/universal:stage grpc-server/universal:stage)...${NC}"
+    echo -e "${CYAN}Compilando AMZX Node e extensões (sbt node/assembly waves-ext/packageBin grpc-server/universal:stage)...${NC}"
     cd "$WAVES_SRC_DIR"
-    JAVA_HOME="$JAVA_HOME" sbt node/assembly waves-ext/universal:stage grpc-server/universal:stage
+    JAVA_HOME="$JAVA_HOME" sbt node/assembly waves-ext/packageBin grpc-server/universal:stage
     if [ $? -ne 0 ]; then
       echo -e "${RED}${BOLD}[ERROR] Falha ao compilar o AMZX Node.${NC}"
       exit 1
@@ -603,79 +603,50 @@ fi
 # Copy compiled waves-ext and grpc-server extensions from waves repository (Scala 3)
 echo -e "${CYAN}Copying compiled waves-ext and grpc-server extensions (Scala 3)...${NC}"
 
-COPIED_FROM_STAGE=false
-
-# First layer: try to copy all dependencies and JARs from the staged universal folder if they exist
-WAVES_EXT_STAGE_DIR="$WAVES_SRC_DIR/waves-ext/target/universal/stage/lib"
-GRPC_SERVER_STAGE_DIR="$WAVES_SRC_DIR/grpc-server/target/universal/stage/lib"
-
-if [ -d "$WAVES_EXT_STAGE_DIR" ] && [ "$(find "$WAVES_EXT_STAGE_DIR" -name "*.jar" | wc -l)" -gt 0 ]; then
-  echo -e "${GREEN}Staged waves-ext libraries found. Copying all dependencies...${NC}"
-  cp "$WAVES_EXT_STAGE_DIR"/*.jar "$RUN_DIR/lib/"
-  COPIED_FROM_STAGE=true
-fi
-
-if [ -d "$GRPC_SERVER_STAGE_DIR" ] && [ "$(find "$GRPC_SERVER_STAGE_DIR" -name "*.jar" | wc -l)" -gt 0 ]; then
-  echo -e "${GREEN}Staged waves-grpc-server libraries found. Copying all dependencies...${NC}"
-  cp "$GRPC_SERVER_STAGE_DIR"/*.jar "$RUN_DIR/lib/"
-  COPIED_FROM_STAGE=true
-fi
-
-# If we successfully copied from stage, we don't need to do single-jar copying, but let's run it as fallback
-if [ "$COPIED_FROM_STAGE" = false ]; then
-  echo -e "${YELLOW}Stage libraries not found. Falling back to individual JAR copy...${NC}"
-  
-  # Copy waves-ext jar
+# 1. Unconditionally find and copy the waves-ext jar
+WAVES_EXT_JAR=$(find "$WAVES_SRC_DIR/waves-ext/target" -name "waves-ext*.jar" | head -n 1)
+if [ -n "$WAVES_EXT_JAR" ] && [ -f "$WAVES_EXT_JAR" ]; then
+  cp "$WAVES_EXT_JAR" "$RUN_DIR/lib/"
+  echo -e "✅ ${GREEN}Copied waves-ext extension: $(basename "$WAVES_EXT_JAR")${NC}"
+else
+  # If waves-ext jar is missing, we try to compile it on-demand
+  echo -e "${YELLOW}waves-ext compiled jar not found. Attempting on-demand build of waves-ext...${NC}"
+  cd "$WAVES_SRC_DIR"
+  JAVA_HOME="$JAVA_HOME" sbt waves-ext/packageBin
+  cd "$WIZARD_DIR"
   WAVES_EXT_JAR=$(find "$WAVES_SRC_DIR/waves-ext/target" -name "waves-ext*.jar" | head -n 1)
   if [ -n "$WAVES_EXT_JAR" ] && [ -f "$WAVES_EXT_JAR" ]; then
     cp "$WAVES_EXT_JAR" "$RUN_DIR/lib/"
-    echo -e "✅ ${GREEN}Copied waves-ext extension: $(basename "$WAVES_EXT_JAR")${NC}"
+    echo -e "✅ ${GREEN}Copied waves-ext extension after compile: $(basename "$WAVES_EXT_JAR")${NC}"
   else
-    # On-demand build
-    echo -e "${YELLOW}waves-ext compiled jar not found. Attempting on-demand build of extensions...${NC}"
-    cd "$WAVES_SRC_DIR"
-    JAVA_HOME="$JAVA_HOME" sbt waves-ext/universal:stage grpc-server/universal:stage
-    cd "$WIZARD_DIR"
-    
-    # Try copying from stage directory after build
-    if [ -d "$WAVES_EXT_STAGE_DIR" ] && [ "$(find "$WAVES_EXT_STAGE_DIR" -name "*.jar" | wc -l)" -gt 0 ]; then
-      cp "$WAVES_EXT_STAGE_DIR"/*.jar "$RUN_DIR/lib/"
-      COPIED_FROM_STAGE=true
-    fi
-    if [ -d "$GRPC_SERVER_STAGE_DIR" ] && [ "$(find "$GRPC_SERVER_STAGE_DIR" -name "*.jar" | wc -l)" -gt 0 ]; then
-      cp "$GRPC_SERVER_STAGE_DIR"/*.jar "$RUN_DIR/lib/"
-      COPIED_FROM_STAGE=true
-    fi
-    
-    if [ "$COPIED_FROM_STAGE" = false ]; then
-      # Double fallback to raw target jar
-      WAVES_EXT_JAR=$(find "$WAVES_SRC_DIR/waves-ext/target" -name "waves-ext*.jar" | head -n 1)
-      if [ -n "$WAVES_EXT_JAR" ] && [ -f "$WAVES_EXT_JAR" ]; then
-        cp "$WAVES_EXT_JAR" "$RUN_DIR/lib/"
-        echo -e "✅ ${GREEN}Copied waves-ext extension after compile: $(basename "$WAVES_EXT_JAR")${NC}"
-      else
-        echo -e "${RED}${BOLD}[ERROR] waves-ext compiled libraries could not be found! The node might fail with ClassNotFoundException.${NC}"
-        exit 1
-      fi
-    fi
+    echo -e "${RED}${BOLD}[ERROR] waves-ext compiled libraries could not be found! The node might fail with ClassNotFoundException.${NC}"
+    exit 1
   fi
+fi
 
-  if [ "$COPIED_FROM_STAGE" = false ]; then
-    # Copy grpc-server jar
+# 2. Copy staged universal grpc-server files (including its transitive libraries)
+GRPC_SERVER_STAGE_DIR="$WAVES_SRC_DIR/grpc-server/target/universal/stage/lib"
+if [ -d "$GRPC_SERVER_STAGE_DIR" ] && [ "$(find "$GRPC_SERVER_STAGE_DIR" -name "*.jar" | wc -l)" -gt 0 ]; then
+  echo -e "${GREEN}Staged waves-grpc-server libraries found. Copying all dependencies...${NC}"
+  cp "$GRPC_SERVER_STAGE_DIR"/*.jar "$RUN_DIR/lib/"
+else
+  # On-demand build
+  echo -e "${YELLOW}Staged grpc-server libraries not found. Attempting on-demand build of grpc-server...${NC}"
+  cd "$WAVES_SRC_DIR"
+  JAVA_HOME="$JAVA_HOME" sbt grpc-server/universal:stage
+  cd "$WIZARD_DIR"
+  if [ -d "$GRPC_SERVER_STAGE_DIR" ] && [ "$(find "$GRPC_SERVER_STAGE_DIR" -name "*.jar" | wc -l)" -gt 0 ]; then
+    cp "$GRPC_SERVER_STAGE_DIR"/*.jar "$RUN_DIR/lib/"
+    echo -e "✅ ${GREEN}Copied staged waves-grpc-server libraries after compile.${NC}"
+  else
+    # Fallback to copy the main jar only (better than nothing, though transitives might be missing)
     GRPC_SERVER_JAR=$(find "$WAVES_SRC_DIR/grpc-server/target" -name "waves-grpc-server*.jar" | head -n 1)
     if [ -n "$GRPC_SERVER_JAR" ] && [ -f "$GRPC_SERVER_JAR" ]; then
       cp "$GRPC_SERVER_JAR" "$RUN_DIR/lib/"
-      echo -e "✅ ${GREEN}Copied waves-grpc-server extension: $(basename "$GRPC_SERVER_JAR")${NC}"
+      echo -e "✅ ${GREEN}Copied raw waves-grpc-server extension: $(basename "$GRPC_SERVER_JAR")${NC}"
     else
-      # Try copying from raw target
-      GRPC_SERVER_JAR=$(find "$WAVES_SRC_DIR/grpc-server/target" -name "waves-grpc-server*.jar" | head -n 1)
-      if [ -n "$GRPC_SERVER_JAR" ] && [ -f "$GRPC_SERVER_JAR" ]; then
-        cp "$GRPC_SERVER_JAR" "$RUN_DIR/lib/"
-        echo -e "✅ ${GREEN}Copied waves-grpc-server extension after compile: $(basename "$GRPC_SERVER_JAR")${NC}"
-      else
-        echo -e "${RED}${BOLD}[ERROR] waves-grpc-server compiled libraries could not be found! The node might fail with ClassNotFoundException.${NC}"
-        exit 1
-      fi
+      echo -e "${RED}${BOLD}[ERROR] waves-grpc-server compiled libraries could not be found! The node might fail with ClassNotFoundException.${NC}"
+      exit 1
     fi
   fi
 fi
