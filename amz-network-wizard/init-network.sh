@@ -555,6 +555,57 @@ if [ "$REUSE_EXISTING_CONFIG" = false ] && [ -f "$BLOCKCHAIN_CONF_PATH" ] && [ -
   fi
 fi
 
+# ------------------------------------------------------------------------------
+# AUTOMATIC NATIVE COIN REBRANDING IN SCALA SOURCE
+# ------------------------------------------------------------------------------
+ASSET_SCALA_PATH="$WAVES_SRC_DIR/node/src/main/scala/com/wavesplatform/transaction/Asset.scala"
+
+if [ -f "$ASSET_SCALA_PATH" ]; then
+  CURRENT_SCALA_COIN=$(grep -oE 'val WavesName\s*=\s*"[^"]+"' "$ASSET_SCALA_PATH" | sed -E 's/.*"([^"]+)".*/\1/')
+  CURRENT_SCALA_COIN=${CURRENT_SCALA_COIN:-"AMZX"}
+
+  if [ "$CURRENT_SCALA_COIN" != "$COIN_NAME" ]; then
+    echo
+    echo -e "${YELLOW}${BOLD}⚠️  DETECTADO REBRAND DE MOEDA NATIVA: '$CURRENT_SCALA_COIN' -> '$COIN_NAME'${NC}"
+    echo -e "Atualizando a constante de moeda nativa no código-fonte Scala..."
+    
+    # Atualiza o arquivo Scala via sed
+    sed -i -E "s/(val WavesName\s*=\s*\")[^\"]+(\")/\1$COIN_NAME\2/" "$ASSET_SCALA_PATH"
+    
+    echo -e "✅ Código-fonte de ${GREEN}Asset.scala${NC} atualizado com sucesso!"
+    echo
+    echo -e "${CYAN}Como o nome da moeda nativa mudou, precisamos recompilar o AMZX Node para aplicar às APIs de erro...${NC}"
+    
+    # Remove o JAR antigo para forçar nova detecção
+    rm -f "$WAVES_SRC_DIR"/node/target/waves-all-*.jar
+    
+    # Compila o Blockchain com o novo nome
+    echo -e "${YELLOW}Compilando AMZX Node com a moeda nativa '$COIN_NAME' (sbt node/assembly waves-ext/packageBin grpc-server/universal:stage)...${NC}"
+    cd "$WAVES_SRC_DIR"
+    JAVA_HOME="$JAVA_HOME" sbt node/assembly waves-ext/packageBin grpc-server/universal:stage
+    if [ $? -ne 0 ]; then
+      echo -e "${RED}${BOLD}[ERROR] Falha ao recompilar o nó com o nome da moeda customizada.${NC}"
+      exit 1
+    fi
+    
+    # Recompila o Matcher DEX se o nome da moeda mudou para garantir que o waves-ext use a versão correta
+    echo -e "${CYAN}Compilando AMZX Matcher DEX para herdar a nova moeda...${NC}"
+    cd "$MATCHER_SRC_DIR"
+    JAVA_HOME="$JAVA_HOME" sbt "project dex" compile
+    if [ $? -ne 0 ]; then
+      echo -e "${RED}${BOLD}[ERROR] Falha ao recompilar o Matcher DEX.${NC}"
+      exit 1
+    fi
+    
+    cd "$WIZARD_DIR"
+    FAT_JAR=$(find "$WAVES_SRC_DIR" -name "waves-all*.jar" | head -n 1)
+    echo -e "${GREEN}${BOLD}Compilações completadas com sucesso! Moeda nativa '$COIN_NAME' aplicada com sucesso!${NC}"
+    echo
+  fi
+else
+  echo -e "${YELLOW}Aviso: Arquivo de controle de ativos 'Asset.scala' não encontrado em: $ASSET_SCALA_PATH${NC}"
+fi
+
 echo
 echo -e "${YELLOW}${BOLD}--- 🌐 STEP 6b: CONFIGURE DOMAIN & SUBDOMAINS ---${NC}"
 read -p "Do you want to configure Nginx Reverse Proxy with SSL/Certbot for this network? [y/N]: " CONFIGURE_NGINX
