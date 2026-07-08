@@ -979,13 +979,106 @@ export JAVA_HOME="$JAVA_HOME"
 export PATH=\$JAVA_HOME/bin:\$PATH
 
 cd "$MATCHER_SRC_DIR"
-sbt "project dex" "run $MATCHER_CONF_PATH"
+sbt "dex/run $MATCHER_CONF_PATH"
 EOF
 chmod 700 "$START_MATCHER_SCRIPT"
 
 echo -e "Created startup scripts:"
 echo -e " - Node launch:    ${CYAN}$START_NODE_SCRIPT${NC}"
 echo -e " - Matcher launch: ${CYAN}$START_MATCHER_SCRIPT${NC}"
+
+# ------------------------------------------------------------------------------
+# STEP 9.1: AUTOMATED DOCKER SETUP SYNCHRONIZATION
+# ------------------------------------------------------------------------------
+DOCKER_SETUP_DIR="$PROJECT_ROOT/docker-setup"
+if [ -d "$DOCKER_SETUP_DIR" ]; then
+  echo
+  echo -e "🐳 ${YELLOW}${BOLD}--- 🐳 STEP 9.1: SYNCHRONIZING DOCKER SETUP ---${NC}"
+  echo -e "Detectado diretório de Docker Setup em: ${BLUE}$DOCKER_SETUP_DIR${NC}"
+  
+  # Exportar todas as variáveis necessárias para o subprocesso Python
+  export DOCKER_SETUP_DIR CHAIN_ID COIN_NAME SUPPLY SEED REST_API_KEY BASE_DOMAIN CERTBOT_EMAIL REST_API_PORT P2P_PORT GRPC_PORT BLOCKCHAIN_UPDATES_PORT MATCHER_PORT
+  
+  python3 -c '
+import os, re
+
+docker_dir = os.environ["DOCKER_SETUP_DIR"]
+chain_id = os.environ["CHAIN_ID"]
+coin_name = os.environ["COIN_NAME"]
+supply = os.environ["SUPPLY"]
+seed = os.environ["SEED"]
+rest_api_key = os.environ["REST_API_KEY"]
+base_domain = os.environ["BASE_DOMAIN"]
+certbot_email = os.environ["CERTBOT_EMAIL"]
+rest_api_port = os.environ["REST_API_PORT"]
+p2p_port = os.environ["P2P_PORT"]
+grpc_port = os.environ["GRPC_PORT"]
+updates_port = os.environ["BLOCKCHAIN_UPDATES_PORT"]
+matcher_port = os.environ["MATCHER_PORT"]
+
+# 1. Atualizar docker-compose.yml
+compose_path = os.path.join(docker_dir, "docker-compose.yml")
+if os.path.exists(compose_path):
+    with open(compose_path, "r", encoding="utf-8") as f:
+        content = f.read()
+    
+    # Substituir portas expostas seletivamente
+    content = content.replace("6869:6869", f"{rest_api_port}:{rest_api_port}")
+    content = content.replace("6868:6868", f"{p2p_port}:{p2p_port}")
+    content = content.replace("6886:6886", f"{matcher_port}:{matcher_port}")
+    content = content.replace("6887:6887", f"{grpc_port}:{grpc_port}")
+    content = content.replace("6881:6881", f"{updates_port}:{updates_port}")
+    
+    # Substituir variáveis de ambiente
+    content = re.sub(r"-\s*CHAIN_ID\s*=\s*\S+", f"- CHAIN_ID={chain_id}", content)
+    content = re.sub(r"-\s*COIN_NAME\s*=\s*\S+", f"- COIN_NAME={coin_name}", content)
+    content = re.sub(r"-\s*SUPPLY\s*=\s*\S+", f"- SUPPLY={supply}", content)
+    content = re.sub(r"-\s*SEED\s*=\s*[^\n]+", f"- SEED={seed}", content)
+    content = re.sub(r"-\s*REST_API_KEY\s*=\s*\S+", f"- REST_API_KEY={rest_api_key}", content)
+    content = re.sub(r"-\s*BASE_DOMAIN\s*=\s*\S+", f"- BASE_DOMAIN={base_domain}", content)
+    content = re.sub(r"-\s*CERTBOT_EMAIL\s*=\s*\S+", f"- CERTBOT_EMAIL={certbot_email}", content)
+    
+    # Substituir portas de variáveis de ambiente
+    content = re.sub(r"-\s*REST_API_PORT\s*=\s*\S+", f"- REST_API_PORT={rest_api_port}", content)
+    content = re.sub(r"-\s*P2P_PORT\s*=\s*\S+", f"- P2P_PORT={p2p_port}", content)
+    content = re.sub(r"-\s*GRPC_PORT\s*=\s*\S+", f"- GRPC_PORT={grpc_port}", content)
+    content = re.sub(r"-\s*BLOCKCHAIN_UPDATES_PORT\s*=\s*\S+", f"- BLOCKCHAIN_UPDATES_PORT={updates_port}", content)
+    content = re.sub(r"-\s*MATCHER_PORT\s*=\s*\S+", f"- MATCHER_PORT={matcher_port}", content)
+    
+    # Substituir volume persistente
+    content = re.sub(r"run-amzx-[A-Za-z0-9]", f"run-amzx-{chain_id}", content)
+    
+    with open(compose_path, "w", encoding="utf-8") as f:
+        f.write(content)
+    print("✅ Sincronizado: docker-compose.yml")
+
+# 2. Atualizar entrypoint.sh
+entrypoint_path = os.path.join(docker_dir, "entrypoint.sh")
+if os.path.exists(entrypoint_path):
+    with open(entrypoint_path, "r", encoding="utf-8") as f:
+        content = f.read()
+        
+    # Substituir defaults dinâmicos
+    content = re.sub(r"CHAIN_ID=\"\$\{CHAIN_ID:-[^\n\}]+\}\"", f"CHAIN_ID=\"${{CHAIN_ID:-{chain_id}}}\"", content)
+    content = re.sub(r"COIN_NAME=\"\$\{COIN_NAME:-[^\n\}]+\}\"", f"COIN_NAME=\"${{COIN_NAME:-{coin_name}}}\"", content)
+    content = re.sub(r"SUPPLY=\"\$\{SUPPLY:-[^\n\}]+\}\"", f"SUPPLY=\"${{SUPPLY:-{supply}}}\"", content)
+    content = re.sub(r"SEED=\"\$\{SEED:-[^\n\}]+\}\"", f"SEED=\"${{SEED:-{seed}}}\"", content)
+    content = re.sub(r"REST_API_KEY=\"\$\{REST_API_KEY:-[^\n\}]+\}\"", f"REST_API_KEY=\"${{REST_API_KEY:-{rest_api_key}}}\"", content)
+    content = re.sub(r"BASE_DOMAIN=\"\$\{BASE_DOMAIN:-[^\n\}]+\}\"", f"BASE_DOMAIN=\"${{BASE_DOMAIN:-{base_domain}}}\"", content)
+    content = re.sub(r"CERTBOT_EMAIL=\"\$\{CERTBOT_EMAIL:-[^\n\}]+\}\"", f"CERTBOT_EMAIL=\"${{CERTBOT_EMAIL:-{certbot_email}}}\"", content)
+    
+    content = re.sub(r"REST_API_PORT=\"\$\{REST_API_PORT:-[^\n\}]+\}\"", f"REST_API_PORT=\"${{REST_API_PORT:-{rest_api_port}}}\"", content)
+    content = re.sub(r"P2P_PORT=\"\$\{P2P_PORT:-[^\n\}]+\}\"", f"P2P_PORT=\"${{P2P_PORT:-{p2p_port}}}\"", content)
+    content = re.sub(r"GRPC_PORT=\"\$\{GRPC_PORT:-[^\n\}]+\}\"", f"GRPC_PORT=\"${{GRPC_PORT:-{grpc_port}}}\"", content)
+    content = re.sub(r"BLOCKCHAIN_UPDATES_PORT=\"\$\{BLOCKCHAIN_UPDATES_PORT:-[^\n\}]+\}\"", f"BLOCKCHAIN_UPDATES_PORT=\"${{BLOCKCHAIN_UPDATES_PORT:-{updates_port}}}\"", content)
+    content = re.sub(r"MATCHER_PORT=\"\$\{MATCHER_PORT:-[^\n\}]+\}\"", f"MATCHER_PORT=\"${{MATCHER_PORT:-{matcher_port}}}\"", content)
+    
+    with open(entrypoint_path, "w", encoding="utf-8") as f:
+        f.write(content)
+    print("✅ Sincronizado: entrypoint.sh")
+'
+  echo -e "✅ ${GREEN}Docker Setup sincronizado com sucesso! Variáveis e volumes alinhados com o Chain ID '${CHAIN_ID}'.${NC}"
+fi
 
 if [ -n "$BASE_DOMAIN" ]; then
   NGINX_CONF_PATH="$RUN_DIR/nginx-amzx.conf"
