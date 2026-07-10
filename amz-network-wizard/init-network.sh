@@ -227,8 +227,8 @@ read -p "Do you want to clone clean repositories from Diego's GitHub to a fresh 
 COMPILE_PRE=${COMPILE_PRE:-N}
 CLONE_REPOS=${CLONE_REPOS:-N}
 
-WAVES_SRC_DIR="$PROJECT_ROOT/waves"
-MATCHER_SRC_DIR="$PROJECT_ROOT/matcher"
+WAVES_SRC_DIR="$PROJECT_ROOT/amzx-node"
+MATCHER_SRC_DIR="$PROJECT_ROOT/amzx-matcher"
 
 # Auto-detect workspace folders if they are in the custom amzx-workspace directory (typically on VPS)
 if [ ! -d "$WAVES_SRC_DIR" ] && [ -d "$WIZARD_DIR/amzx-workspace/amzx" ]; then
@@ -239,11 +239,11 @@ if [ ! -d "$MATCHER_SRC_DIR" ] && [ -d "$WIZARD_DIR/amzx-workspace/matcher_amzx"
 fi
 
 # Se o usuário não estiver rodando no root e estiver na pasta padrão de documentos, ajustamos automaticamente os caminhos se existirem
-if [ ! -d "$WAVES_SRC_DIR" ] && [ -d "/home/diegooris/Documentos/amzblockchain/waves" ]; then
-  WAVES_SRC_DIR="/home/diegooris/Documentos/amzblockchain/waves"
+if [ ! -d "$WAVES_SRC_DIR" ] && [ -d "/home/diegooris/Documentos/amzblockchain/amzx-node" ]; then
+  WAVES_SRC_DIR="/home/diegooris/Documentos/amzblockchain/amzx-node"
 fi
-if [ ! -d "$MATCHER_SRC_DIR" ] && [ -d "/home/diegooris/Documentos/amzblockchain/matcher" ]; then
-  MATCHER_SRC_DIR="/home/diegooris/Documentos/amzblockchain/matcher"
+if [ ! -d "$MATCHER_SRC_DIR" ] && [ -d "/home/diegooris/Documentos/amzblockchain/amzx-matcher" ]; then
+  MATCHER_SRC_DIR="/home/diegooris/Documentos/amzblockchain/amzx-matcher"
 fi
 
 if [[ "$CLONE_REPOS" =~ ^[Ss]$ ]]; then
@@ -983,14 +983,39 @@ sbt "dex/run $MATCHER_CONF_PATH"
 EOF
 chmod 700 "$START_MATCHER_SCRIPT"
 
+# Start Data Service script
+START_DATA_SERVICE_SCRIPT="$RUN_DIR/start-data-service.sh"
+cat <<EOF > "$START_DATA_SERVICE_SCRIPT"
+#!/usr/bin/env bash
+# Startup script for AMZX Data Service
+
+echo -e "\033[1;32mStarting AMZX Data Service on Port '3000'...\033[0m"
+
+export PORT=3000
+export PGHOST=127.0.0.1
+export PGPORT=5432
+export PGDATABASE=amzx_db
+export PGUSER=postgres
+export PGPASSWORD=postgres
+
+export DEFAULT_MATCHER="$GENESIS_ADDRESS"
+export RATE_PAIR_ACCEPTANCE_VOLUME_THRESHOLD=1
+export RATE_THRESHOLD_ASSET_ID="AMZX"
+export RATE_BASE_ASSET_ID="AMZX"
+
+exec "$PROJECT_ROOT/start-data-service.sh"
+EOF
+chmod 700 "$START_DATA_SERVICE_SCRIPT"
+
 echo -e "Created startup scripts:"
-echo -e " - Node launch:    ${CYAN}$START_NODE_SCRIPT${NC}"
-echo -e " - Matcher launch: ${CYAN}$START_MATCHER_SCRIPT${NC}"
+echo -e " - Node launch:         ${CYAN}$START_NODE_SCRIPT${NC}"
+echo -e " - Matcher launch:      ${CYAN}$START_MATCHER_SCRIPT${NC}"
+echo -e " - Data Service launch: ${CYAN}$START_DATA_SERVICE_SCRIPT${NC}"
 
 # ------------------------------------------------------------------------------
 # STEP 9.1: AUTOMATED DOCKER SETUP SYNCHRONIZATION
 # ------------------------------------------------------------------------------
-DOCKER_SETUP_DIR="$PROJECT_ROOT/docker-setup"
+DOCKER_SETUP_DIR="$PROJECT_ROOT/amzx-docker"
 if [ -d "$DOCKER_SETUP_DIR" ]; then
   echo
   echo -e "🐳 ${YELLOW}${BOLD}--- 🐳 STEP 9.1: SYNCHRONIZING DOCKER SETUP ---${NC}"
@@ -1304,6 +1329,19 @@ if [ "$MATCHER_ALREADY_RUNNING" = false ]; then
   echo -e "👉 Matcher started with PID ${BOLD}$MATCHER_PID${NC}. Log file: ${BLUE}$RUN_DIR/matcher.log${NC}"
 fi
 
+DATA_SERVICE_ALREADY_RUNNING=false
+if check_port "3000"; then
+  echo -e "⚠️  ${YELLOW}Something is already listening on Data Service Port (3000). Data Service might already be running!${NC}"
+  DATA_SERVICE_ALREADY_RUNNING=true
+fi
+
+if [ "$DATA_SERVICE_ALREADY_RUNNING" = false ]; then
+  echo -e "📡 ${CYAN}Starting AMZX Data Service indexer in the background...${NC}"
+  nohup "$START_DATA_SERVICE_SCRIPT" < /dev/null > "$RUN_DIR/data-service.log" 2>&1 &
+  DATA_SERVICE_PID=$!
+  echo -e "👉 Data Service started with PID ${BOLD}$DATA_SERVICE_PID${NC}. Log file: ${BLUE}$RUN_DIR/data-service.log${NC}"
+fi
+
 # Polling loop for active verification
 MAX_WAIT=120
 WAIT_INTERVAL=3
@@ -1311,6 +1349,7 @@ ELAPSED=0
 
 NODE_ONLINE=false
 MATCHER_ONLINE=false
+DATA_SERVICE_ONLINE=false
 
 if [ "$NODE_ALREADY_RUNNING" = true ]; then
   NODE_ONLINE=true
@@ -1318,10 +1357,13 @@ fi
 if [ "$MATCHER_ALREADY_RUNNING" = true ]; then
   MATCHER_ONLINE=true
 fi
+if [ "$DATA_SERVICE_ALREADY_RUNNING" = true ]; then
+  DATA_SERVICE_ONLINE=true
+fi
 
 echo
 echo -e "${YELLOW}Waiting for services to initialize and bind to their ports...${NC}"
-echo -e "This can take up to 2 minutes on the first execution (JVM & SBT boot time).${NC}"
+echo -e "This can take up to 2 minutes on the first execution (JVM, SBT & Node Indexer boot time).${NC}"
 echo
 
 while [ $ELAPSED -lt $MAX_WAIT ]; do
@@ -1334,6 +1376,12 @@ while [ $ELAPSED -lt $MAX_WAIT ]; do
   if [ "$MATCHER_ONLINE" = false ]; then
     if check_port "$MATCHER_PORT"; then
       MATCHER_ONLINE=true
+    fi
+  fi
+
+  if [ "$DATA_SERVICE_ONLINE" = false ]; then
+    if check_port "3000"; then
+      DATA_SERVICE_ONLINE=true
     fi
   fi
 
@@ -1364,6 +1412,20 @@ while [ $ELAPSED -lt $MAX_WAIT ]; do
       exit 1
     fi
   fi
+
+  # Check if Data Service died unexpectedly
+  if [ "$DATA_SERVICE_ALREADY_RUNNING" = false ] && [ "$DATA_SERVICE_ONLINE" = false ] && [ -n "$DATA_SERVICE_PID" ]; then
+    if ! kill -0 "$DATA_SERVICE_PID" &>/dev/null; then
+      echo -e "\n"
+      echo -e "⚠️  ${RED}${BOLD}[CRITICAL ERROR] O AMZX Data Service parou inesperadamente durante a inicialização!${NC}"
+      echo -e "❌ Processo $DATA_SERVICE_PID encerrou prematuramente."
+      echo -e "Últimas 30 linhas do log do Data Service ($RUN_DIR/data-service.log):"
+      echo -e "${YELLOW}------------------------------------------------------------------------${NC}"
+      tail -n 30 "$RUN_DIR/data-service.log"
+      echo -e "${YELLOW}------------------------------------------------------------------------${NC}"
+      exit 1
+    fi
+  fi
   
   # Print progress
   echo -n -e "\r⏳ Elapsed: ${ELAPSED}s / ${MAX_WAIT}s | Node: "
@@ -1378,9 +1440,15 @@ while [ $ELAPSED -lt $MAX_WAIT ]; do
   else
     echo -n -e "[${RED}OFFLINE${NC}]"
   fi
+  echo -n -e " | DataService: "
+  if [ "$DATA_SERVICE_ONLINE" = true ]; then
+    echo -n -e "[${GREEN}ONLINE${NC}]"
+  else
+    echo -n -e "[${RED}OFFLINE${NC}]"
+  fi
   
-  if [ "$NODE_ONLINE" = true ] && [ "$MATCHER_ONLINE" = true ]; then
-    echo -e "\n\n🎉 ${GREEN}${BOLD}SUCCESS! Both blockchain services are now successfully ONLINE and verified!${NC}"
+  if [ "$NODE_ONLINE" = true ] && [ "$MATCHER_ONLINE" = true ] && [ "$DATA_SERVICE_ONLINE" = true ]; then
+    echo -e "\n\n🎉 ${GREEN}${BOLD}SUCCESS! All AMZX blockchain services are now successfully ONLINE and verified!${NC}"
     break
   fi
   
@@ -1388,7 +1456,7 @@ while [ $ELAPSED -lt $MAX_WAIT ]; do
   ELAPSED=$((ELAPSED + WAIT_INTERVAL))
 done
 
-if [ "$NODE_ONLINE" = false ] || [ "$MATCHER_ONLINE" = false ]; then
+if [ "$NODE_ONLINE" = false ] || [ "$MATCHER_ONLINE" = false ] || [ "$DATA_SERVICE_ONLINE" = false ]; then
   echo -e "\n"
   echo -e "⚠️  ${RED}${BOLD}[TIMEOUT] One or more services failed to start within $MAX_WAIT seconds.${NC}"
   if [ "$NODE_ONLINE" = false ]; then
@@ -1398,6 +1466,10 @@ if [ "$NODE_ONLINE" = false ] || [ "$MATCHER_ONLINE" = false ]; then
   if [ "$MATCHER_ONLINE" = false ]; then
     echo -e "❌ Matcher on port $MATCHER_PORT is ${RED}OFFLINE${NC}."
     echo -e "   Check details in log: ${CYAN}cat $RUN_DIR/matcher.log${NC}"
+  fi
+  if [ "$DATA_SERVICE_ONLINE" = false ]; then
+    echo -e "❌ Data Service on port 3000 is ${RED}OFFLINE${NC}."
+    echo -e "   Check details in log: ${CYAN}cat $RUN_DIR/data-service.log${NC}"
   fi
   echo
 fi
@@ -1410,15 +1482,17 @@ echo
 echo -e "The blockchain and Matcher DEX network ecosystem is now configured and running."
 echo
 echo -e " ${BOLD}Control Scripts (for future manual restarts):${NC}"
-echo -e "  - Node launch script:    ${CYAN}$START_NODE_SCRIPT${NC}"
-echo -e "  - Matcher launch script: ${CYAN}$START_MATCHER_SCRIPT${NC}"
+echo -e "  - Node launch script:         ${CYAN}$START_NODE_SCRIPT${NC}"
+echo -e "  - Matcher launch script:      ${CYAN}$START_MATCHER_SCRIPT${NC}"
+echo -e "  - Data Service launch script: ${CYAN}$START_DATA_SERVICE_SCRIPT${NC}"
 if [ -n "$BASE_DOMAIN" ]; then
-  echo -e "  - SSL/Nginx Setup script: ${YELLOW}$SETUP_SSL_SCRIPT${NC}"
+  echo -e "  - SSL/Nginx Setup script:     ${YELLOW}$SETUP_SSL_SCRIPT${NC}"
 fi
 echo
 echo -e " ${BOLD}Live Logs:${NC}"
-echo -e "  - Node log stream:       ${BLUE}tail -f $RUN_DIR/node.log${NC}"
-echo -e "  - Matcher log stream:    ${BLUE}tail -f $RUN_DIR/matcher.log${NC}"
+echo -e "  - Node log stream:            ${BLUE}tail -f $RUN_DIR/node.log${NC}"
+echo -e "  - Matcher log stream:         ${BLUE}tail -f $RUN_DIR/matcher.log${NC}"
+echo -e "  - Data Service log stream:    ${BLUE}tail -f $RUN_DIR/data-service.log${NC}"
 echo
 echo -e " ${BOLD}Useful Addresses & Resources:${NC}"
 if [ -n "$BASE_DOMAIN" ]; then
@@ -1427,9 +1501,11 @@ if [ -n "$BASE_DOMAIN" ]; then
   echo -e "  - MetaMask JSON-RPC (HTTPS):    ${BLUE}https://rpc.$BASE_DOMAIN${NC}"
   echo -e "  - Node API Swagger Docs (HTTP):  ${BLUE}http://localhost:$REST_API_PORT/api-docs/index.html${NC}"
   echo -e "  - Matcher API Swagger (HTTP):   ${BLUE}http://localhost:$MATCHER_PORT/api-docs/index.html${NC}"
+  echo -e "  - Data Service API URL (HTTP):  ${BLUE}http://localhost:3000/v0${NC}"
 else
   echo -e "  - Node API Swagger Documentation: ${BLUE}http://localhost:$REST_API_PORT/api-docs/index.html${NC}"
   echo -e "  - Matcher DEX API Swagger Docs:  ${BLUE}http://localhost:$MATCHER_PORT/api-docs/index.html${NC}"
+  echo -e "  - Data Service REST API URL:     ${BLUE}http://localhost:3000/v0${NC}"
 fi
 echo -e "  - Initial Miner Balance Account: ${MAGENTA}$GENESIS_ADDRESS${NC}"
 echo -e "  - Native Coin Asset Name:        ${YELLOW}$COIN_NAME${NC}"
