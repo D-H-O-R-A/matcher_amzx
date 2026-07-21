@@ -1,8 +1,8 @@
 <h1 align="center">📈 AMZX Matcher DEX</h1>
 
 <p align="center">
-  <a href="https://github.com/D-H-O-R-A/matcher_amzx" target="_blank">
-    <img alt="GitHub Repo" src="https://img.shields.io/badge/GitHub-matcher__amzx-blue?logo=github" />
+  <a href="https://github.com/D-H-O-R-A/matcher" target="_blank">
+    <img alt="GitHub Repo" src="https://img.shields.io/badge/GitHub-matcher-blue?logo=github" />
   </a>
   <a href="mailto:diegoantunes2301@gmail.com">
     <img alt="Email Contact" src="https://img.shields.io/badge/Email-diegoantunes2301%40gmail.com-red?logo=gmail" />
@@ -37,8 +37,8 @@ Here is how to get the AMZX Matcher compiled and connected to your running AMZX 
 
 ### 1. Clone the Repository
 ```bash
-git clone https://github.com/D-H-O-R-A/matcher_amzx.git
-cd matcher_amzx
+git clone https://github.com/D-H-O-R-A/matcher.git
+cd matcher
 ```
 
 ### 2. Compile and Test
@@ -58,14 +58,19 @@ sbt "project dex" "run /path/to/matcher.conf"
 
 ---
 
-## 🔧 Interactive Network Wizard
+## 🔧 Integração & Inicialização (Importante)
 
-To generate custom AMZX network configs (such as custom chainId, supply, and ports) and run both node and matcher step-by-step, use the companion setup tool:
+> ⚠️ **O Matcher DEX é um plugin/extensão da blockchain principal (AMZX Node).** 
 
-```bash
-cd amz-network-wizard
-./init-network.sh
-```
+Por ser um componente integrado, a configuração, assinatura do bloco de genesis e inicialização da rede são coordenadas de forma centralizada **exclusivamente através do repositório principal**:
+
+1. Certifique-se de que a pasta deste repositório (`matcher`) está no mesmo diretório pai do repositório do Node (`amzx`).
+2. Execute o assistente de rede interativo a partir do repositório principal:
+   ```bash
+   cd amzx-node/amz-network-wizard
+   ./init-network.sh
+   ```
+   O assistente se encarregará de detectar o Matcher, compilar ambos e iniciar todo o ecossistema de forma orquestrada e automatizada!
 
 ---
 
@@ -76,7 +81,7 @@ For inquiries, support, integration consulting, or commercial collaborations, re
 - **Developer:** Diego Antunes
 - **Email:** [diegoantunes2301@gmail.com](mailto:diegoantunes2301@gmail.com)
 - **WhatsApp:** [+55 (11) 97428-9097](https://wa.me/5511974289097)
-- **GitHub Repository:** [https://github.com/D-H-O-R-A/matcher_amzx](https://github.com/D-H-O-R-A/matcher_amzx)
+- **GitHub Repository:** [https://github.com/D-H-O-R-A/matcher](https://github.com/D-H-O-R-A/matcher)
 - **Blockchain Core Repo:** [https://github.com/D-H-O-R-A/amzx](https://github.com/D-H-O-R-A/amzx)
 
 ---
